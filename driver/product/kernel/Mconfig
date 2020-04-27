@@ -1,0 +1,26 @@
+#
+#
+# (C) COPYRIGHT 2017-2020 ARM Limited. All rights reserved.
+#
+# This program is free software and is provided to you under the terms of the
+# GNU General Public License version 2 as published by the Free Software
+# Foundation, and any use by you of this program is subject to the terms
+# of such GNU licence.
+#
+# A copy of the licence is included with the program, and can also be obtained
+# from Free Software Foundation, Inc., 51 Franklin Street, Fifth Floor,
+# Boston, MA 02110-1301, USA.
+#
+#
+
+source "kernel/drivers/gpu/arm/midgard/Mconfig"
+
+config DMA_BUF_SYNC_IOCTL_SUPPORTED
+	bool "Kernel DMA buffers support DMA_BUF_IOCTL_SYNC"
+	depends on BACKEND_KERNEL
+	default y
+
+config BUILD_CSF_ONLY_MODULE
+	bool "Build CSF GPU specific kernel modules"
+	depends on BUILD_KERNEL_MODULES && GPU_HAS_CSF
+	default y

@@ -1,0 +1,99 @@
+/*
+ *
+ * (C) COPYRIGHT 2016-2020 ARM Limited. All rights reserved.
+ *
+ * This program is free software and is provided to you under the terms of the
+ * GNU General Public License version 2 as published by the Free Software
+ * Foundation, and any use by you of this program is subject to the terms
+ * of such GNU licence.
+ *
+ * A copy of the licence is included with the program, and can also be obtained
+ * from Free Software Foundation, Inc., 51 Franklin Street, Fifth Floor,
+ * Boston, MA 02110-1301, USA.
+ *
+ */
+
+bob_install_group {
+    name: "IG_kernel_modules",
+    android: {
+        install_path: "{{.module_path}}",
+    },
+    linux: {
+        install_path: "{{.install_dir}}/{{.module_path}}",
+    },
+}
+
+bob_defaults {
+    name: "kernel_defaults",
+    enabled: false,
+    exclude_srcs: [
+        "**/*.mod.c",
+    ],
+    local_include_dirs: [
+        "include",
+    ],
+    build_kernel_modules: {
+        enabled: true,
+        kernel_dir: "{{.kernel_dir}}",
+        kernel_cross_compile: "{{.kernel_compiler}}",
+        kernel_cc: "{{.kernel_cc}}",
+        kernel_hostcc: "{{.kernel_hostcc}}",
+        kernel_clang_triple: "{{.kernel_clang_triple}}",
+    },
+    install_group: "IG_kernel_modules",
+    cflags: [
+        "-Wall",
+    ],
+    werror: {
+        cflags: ["-Werror"],
+    },
+    allow_android_tags: {
+        tags: [
+            "eng",
+            "optional",
+        ],
+    },
+    kbuild_options: [
+        // Start of CS experimental features definitions.
+        // If there is nothing below, definition should be added as follows:
+        // "MALI_EXPERIMENTAL_FEATURE={{.experimental_feature}}"
+        // experimental_feature above comes from Mconfig in
+        // <ddk_root>/product/base/
+        // However, in Mconfig, experimental_feature should be looked up (for
+        // similar explanation to this one) as ALLCAPS, i.e.
+        // EXPERIMENTAL_FEATURE.
+        //
+        // IMPORTANT: MALI_CS_EXPERIMENTAL should NEVER be defined below as it
+        // is an umbrella feature that would be open for inappropriate use
+        // (catch-all for experimental CS code without separating it into
+        // different features).
+        "MALI_JIT_PRESSURE_LIMIT={{.jit_pressure_limit}}",
+        "MALI_INCREMENTAL_RENDERING={{.incremental_rendering}}",
+    ],
+}
+
+bob_defaults {
+    name: "kutf_includes",
+    local_include_dirs: [
+        "drivers/gpu/arm/midgard/tests/include",
+    ],
+}
+
+bob_defaults {
+    name: "kernel_test_includes",
+    defaults: ["kutf_includes"],
+    local_include_dirs: [
+        "drivers/gpu/arm",
+        "drivers/gpu/arm/midgard",
+        "drivers/gpu/arm/midgard/backend/gpu",
+    ],
+}
+
+bob_alias {
+    name: "kernel",
+    srcs: [
+        "dma-buf-test-exporter",
+        "memory_group_manager",
+        "mali_kbase",
+    ],
+}

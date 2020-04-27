@@ -113,10 +113,10 @@ static inline size_t kbasep_serialize_string(
  */
 static inline size_t kbasep_serialize_timestamp(void *buffer, size_t pos)
 {
-	struct timespec ts;
+	struct timespec64 ts;
 	u64             timestamp;
 
-	getrawmonotonic(&ts);
+	ktime_get_raw_ts64(&ts);
 	timestamp = (u64)ts.tv_sec * NSECS_IN_SEC + ts.tv_nsec;
 
 	return kbasep_serialize_bytes(

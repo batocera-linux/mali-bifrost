@@ -33,10 +33,10 @@
  * @kbdev:		Device pointer
  * @cycle_counter:	Pointer to u64 to store cycle counter in
  * @system_time:	Pointer to u64 to store system time in
- * @ts:			Pointer to struct timespec to store current monotonic
+ * @ts:			Pointer to struct timespec64 to store current monotonic
  *			time in
  */
 void kbase_backend_get_gpu_time(struct kbase_device *kbdev, u64 *cycle_counter,
-				u64 *system_time, struct timespec *ts);
+				u64 *system_time, struct timespec64 *ts);
 
 #endif /* _KBASE_BACKEND_TIME_H_ */

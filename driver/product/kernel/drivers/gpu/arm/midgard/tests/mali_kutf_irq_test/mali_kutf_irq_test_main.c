@@ -92,7 +92,7 @@ static irqreturn_t kbase_gpu_irq_custom_handler(int irq, void *data)
 	struct kbase_device *kbdev = kbase_untag(data);
 	u32 val = kbase_reg_read(kbdev, GPU_CONTROL_REG(GPU_IRQ_STATUS));
 	irqreturn_t result;
-	struct timespec tval;
+	struct timespec64 tval;
 	bool has_test_irq = val & TEST_IRQ;
 
 	if (has_test_irq) {
@@ -191,7 +191,7 @@ static void mali_kutf_irq_latency(struct kutf_context *context)
 			GPU_IRQ_HANDLER);
 
 	for (i = 1; i <= NR_TEST_IRQS; i++) {
-		struct timespec tval;
+		struct timespec64 tval;
 		u64 start_time;
 
 		triggered = false;

@@ -852,7 +852,7 @@ static int kbase_api_get_cpu_gpu_timeinfo(struct kbase_context *kctx,
 		union kbase_ioctl_get_cpu_gpu_timeinfo *timeinfo)
 {
 	u32 flags = timeinfo->in.request_flags;
-	struct timespec ts;
+	struct timespec64 ts;
 	u64 timestamp;
 	u64 cycle_cnt;
 

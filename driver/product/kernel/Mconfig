@@ -14,6 +14,7 @@
 #
 
 source "kernel/drivers/gpu/arm/midgard/Mconfig"
+source "kernel/drivers/gpu/arm/midgard/arbitration/Mconfig"
 
 config DMA_BUF_SYNC_IOCTL_SUPPORTED
 	bool "Kernel DMA buffers support DMA_BUF_IOCTL_SYNC"

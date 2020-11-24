@@ -46,6 +46,7 @@
 #include <linux/vmalloc.h>
 #include <linux/wait.h>
 #include <linux/workqueue.h>
+#include <linux/interrupt.h>
 
 #include "mali_base_kernel.h"
 #include <mali_kbase_linux.h>
@@ -56,10 +57,10 @@
  */
 #include "mali_kbase_defs.h"
 
+#include "debug/mali_kbase_debug_ktrace.h"
 #include "context/mali_kbase_context.h"
 #include "mali_kbase_strings.h"
 #include "mali_kbase_mem_lowlevel.h"
-#include "mali_kbase_js.h"
 #include "mali_kbase_utility.h"
 #include "mali_kbase_mem.h"
 #include "mmu/mali_kbase_mmu.h"
@@ -67,9 +68,12 @@
 #include "mali_kbase_mem_profile_debugfs.h"
 #include "mali_kbase_gpuprops.h"
 #include "mali_kbase_ioctl.h"
+#if !MALI_USE_CSF
 #include "mali_kbase_debug_job_fault.h"
 #include "mali_kbase_jd_debugfs.h"
 #include "mali_kbase_jm.h"
+#include "mali_kbase_js.h"
+#endif /* !MALI_USE_CSF */
 
 #include "ipa/mali_kbase_ipa.h"
 
@@ -79,12 +83,24 @@
 
 #include "mali_linux_trace.h"
 
+#if MALI_USE_CSF
+#include "csf/mali_kbase_csf.h"
+#endif
 
 #ifndef u64_to_user_ptr
 /* Introduced in Linux v4.6 */
 #define u64_to_user_ptr(x) ((void __user *)(uintptr_t)x)
 #endif
 
+#if MALI_USE_CSF
+/* Physical memory group ID for CSF user I/O.
+ */
+#define KBASE_MEM_GROUP_CSF_IO BASE_MEM_GROUP_DEFAULT
+
+/* Physical memory group ID for CSF firmware.
+ */
+#define KBASE_MEM_GROUP_CSF_FW BASE_MEM_GROUP_DEFAULT
+#endif
 
 /* Physical memory group ID for a special page which can alias several regions.
  */
@@ -161,6 +177,25 @@ void kbase_sysfs_term(struct kbase_device *kbdev);
 int kbase_protected_mode_init(struct kbase_device *kbdev);
 void kbase_protected_mode_term(struct kbase_device *kbdev);
 
+/**
+ * kbase_device_pm_init() - Performs power management initialization and
+ * Verifies device tree configurations.
+ * @kbdev: The kbase device structure for the device (must be a valid pointer)
+ *
+ * Return: 0 if successful, otherwise a standard Linux error code
+ */
+int kbase_device_pm_init(struct kbase_device *kbdev);
+
+/**
+ * kbase_device_pm_term() - Performs power management deinitialization and
+ * Free resources.
+ * @kbdev: The kbase device structure for the device (must be a valid pointer)
+ *
+ * Clean up all the resources
+ */
+void kbase_device_pm_term(struct kbase_device *kbdev);
+
+
 int power_control_init(struct kbase_device *kbdev);
 void power_control_term(struct kbase_device *kbdev);
 
@@ -186,6 +221,7 @@ int buslog_init(struct kbase_device *kbdev);
 void buslog_term(struct kbase_device *kbdev);
 #endif
 
+#if !MALI_USE_CSF
 int kbase_jd_init(struct kbase_context *kctx);
 void kbase_jd_exit(struct kbase_context *kctx);
 
@@ -193,9 +229,9 @@ void kbase_jd_exit(struct kbase_context *kctx);
  * kbase_jd_submit - Submit atoms to the job dispatcher
  *
  * @kctx: The kbase context to submit to
- * @user_addr: The address in user space of the struct base_jd_atom_v2 array
+ * @user_addr: The address in user space of the struct base_jd_atom array
  * @nr_atoms: The number of atoms in the array
- * @stride: sizeof(struct base_jd_atom_v2)
+ * @stride: sizeof(struct base_jd_atom)
  * @uk6_atom: true if the atoms are legacy atoms (struct base_jd_atom_v2_uk6)
  *
  * Return: 0 on success or error code
@@ -286,9 +322,12 @@ void kbase_job_check_enter_disjoint(struct kbase_device *kbdev, u32 action,
 void kbase_job_check_leave_disjoint(struct kbase_device *kbdev,
 		struct kbase_jd_atom *target_katom);
 
+#endif /* !MALI_USE_CSF */
 
 void kbase_event_post(struct kbase_context *ctx, struct kbase_jd_atom *event);
+#if !MALI_USE_CSF
 int kbase_event_dequeue(struct kbase_context *ctx, struct base_jd_event_v2 *uevent);
+#endif /* !MALI_USE_CSF */
 int kbase_event_pending(struct kbase_context *ctx);
 int kbase_event_init(struct kbase_context *kctx);
 void kbase_event_close(struct kbase_context *kctx);
@@ -352,6 +391,7 @@ static inline void kbase_free_user_buffer(
  */
 int kbase_mem_copy_from_extres(struct kbase_context *kctx,
 		struct kbase_debug_copy_buffer *buf_data);
+#if !MALI_USE_CSF
 int kbase_process_soft_job(struct kbase_jd_atom *katom);
 int kbase_prepare_soft_job(struct kbase_jd_atom *katom);
 void kbase_finish_soft_job(struct kbase_jd_atom *katom);
@@ -367,6 +407,7 @@ int kbase_soft_event_update(struct kbase_context *kctx,
 
 void kbasep_soft_job_timeout_worker(struct timer_list *timer);
 void kbasep_complete_triggered_soft_events(struct kbase_context *kctx, u64 evt);
+#endif /* !MALI_USE_CSF */
 
 void kbasep_as_do_poke(struct work_struct *work);
 
@@ -384,6 +425,40 @@ static inline bool kbase_pm_is_suspending(struct kbase_device *kbdev)
 {
 	return kbdev->pm.suspending;
 }
+
+#ifdef CONFIG_MALI_ARBITER_SUPPORT
+/*
+ * Check whether a gpu lost is in progress
+ *
+ * @kbdev: The kbase device structure for the device (must be a valid pointer)
+ *
+ * Indicates whether a gpu lost has been received and jobs are no longer
+ * being scheduled
+ *
+ * Return: false if gpu is lost
+ * Return: != false otherwise
+ */
+static inline bool kbase_pm_is_gpu_lost(struct kbase_device *kbdev)
+{
+	return (atomic_read(&kbdev->pm.gpu_lost) == 0 ? false : true);
+}
+
+/*
+ * Set or clear gpu lost state
+ *
+ * @kbdev: The kbase device structure for the device (must be a valid pointer)
+ * @gpu_lost: true to activate GPU lost state, FALSE is deactive it
+ *
+ * Puts power management code into gpu lost state or takes it out of the
+ * state.  Once in gpu lost state new GPU jobs will no longer be
+ * scheduled.
+ */
+static inline void kbase_pm_set_gpu_lost(struct kbase_device *kbdev,
+	bool gpu_lost)
+{
+	atomic_set(&kbdev->pm.gpu_lost, (gpu_lost ? 1 : 0));
+}
+#endif
 
 /**
  * kbase_pm_is_active - Determine whether the GPU is active
@@ -417,9 +492,10 @@ void kbase_pm_metrics_start(struct kbase_device *kbdev);
  */
 void kbase_pm_metrics_stop(struct kbase_device *kbdev);
 
+#if !MALI_USE_CSF
 /**
  * Return the atom's ID, as was originally supplied by userspace in
- * base_jd_atom_v2::atom_number
+ * base_jd_atom::atom_number
  */
 static inline int kbase_jd_atom_id(struct kbase_context *kctx, struct kbase_jd_atom *katom)
 {
@@ -446,6 +522,7 @@ static inline struct kbase_jd_atom *kbase_jd_atom_from_id(
 {
 	return &kctx->jctx.atoms[id];
 }
+#endif /* !MALI_USE_CSF */
 
 /**
  * Initialize the disjoint state
@@ -533,230 +610,5 @@ void kbase_disjoint_state_down(struct kbase_device *kbdev);
 #if !defined(UINT64_MAX)
 	#define UINT64_MAX ((uint64_t)0xFFFFFFFFFFFFFFFFULL)
 #endif
-
-#if KBASE_TRACE_ENABLE
-void kbasep_trace_debugfs_init(struct kbase_device *kbdev);
-
-#ifndef CONFIG_MALI_SYSTEM_TRACE
-/** Add trace values about a job-slot
- *
- * @note Any functions called through this macro will still be evaluated in
- * Release builds (CONFIG_MALI_DEBUG not defined). Therefore, when KBASE_TRACE_ENABLE == 0 any
- * functions called to get the parameters supplied to this macro must:
- * - be static or static inline
- * - must just return 0 and have no other statements present in the body.
- */
-#define KBASE_TRACE_ADD_SLOT(kbdev, code, ctx, katom, gpu_addr, jobslot) \
-	kbasep_trace_add(kbdev, KBASE_TRACE_CODE(code), ctx, katom, gpu_addr, \
-			KBASE_TRACE_FLAG_JOBSLOT, 0, jobslot, 0)
-
-/** Add trace values about a job-slot, with info
- *
- * @note Any functions called through this macro will still be evaluated in
- * Release builds (CONFIG_MALI_DEBUG not defined). Therefore, when KBASE_TRACE_ENABLE == 0 any
- * functions called to get the parameters supplied to this macro must:
- * - be static or static inline
- * - must just return 0 and have no other statements present in the body.
- */
-#define KBASE_TRACE_ADD_SLOT_INFO(kbdev, code, ctx, katom, gpu_addr, jobslot, info_val) \
-	kbasep_trace_add(kbdev, KBASE_TRACE_CODE(code), ctx, katom, gpu_addr, \
-			KBASE_TRACE_FLAG_JOBSLOT, 0, jobslot, info_val)
-
-/** Add trace values about a ctx refcount
- *
- * @note Any functions called through this macro will still be evaluated in
- * Release builds (CONFIG_MALI_DEBUG not defined). Therefore, when KBASE_TRACE_ENABLE == 0 any
- * functions called to get the parameters supplied to this macro must:
- * - be static or static inline
- * - must just return 0 and have no other statements present in the body.
- */
-#define KBASE_TRACE_ADD_REFCOUNT(kbdev, code, ctx, katom, gpu_addr, refcount) \
-	kbasep_trace_add(kbdev, KBASE_TRACE_CODE(code), ctx, katom, gpu_addr, \
-			KBASE_TRACE_FLAG_REFCOUNT, refcount, 0, 0)
-/** Add trace values about a ctx refcount, and info
- *
- * @note Any functions called through this macro will still be evaluated in
- * Release builds (CONFIG_MALI_DEBUG not defined). Therefore, when KBASE_TRACE_ENABLE == 0 any
- * functions called to get the parameters supplied to this macro must:
- * - be static or static inline
- * - must just return 0 and have no other statements present in the body.
- */
-#define KBASE_TRACE_ADD_REFCOUNT_INFO(kbdev, code, ctx, katom, gpu_addr, refcount, info_val) \
-	kbasep_trace_add(kbdev, KBASE_TRACE_CODE(code), ctx, katom, gpu_addr, \
-			KBASE_TRACE_FLAG_REFCOUNT, refcount, 0, info_val)
-
-/** Add trace values (no slot or refcount)
- *
- * @note Any functions called through this macro will still be evaluated in
- * Release builds (CONFIG_MALI_DEBUG not defined). Therefore, when KBASE_TRACE_ENABLE == 0 any
- * functions called to get the parameters supplied to this macro must:
- * - be static or static inline
- * - must just return 0 and have no other statements present in the body.
- */
-#define KBASE_TRACE_ADD(kbdev, code, ctx, katom, gpu_addr, info_val)     \
-	kbasep_trace_add(kbdev, KBASE_TRACE_CODE(code), ctx, katom, gpu_addr, \
-			0, 0, 0, info_val)
-
-/** Clear the trace */
-#define KBASE_TRACE_CLEAR(kbdev) \
-	kbasep_trace_clear(kbdev)
-
-/** Dump the slot trace */
-#define KBASE_TRACE_DUMP(kbdev) \
-	kbasep_trace_dump(kbdev)
-
-/** PRIVATE - do not use directly. Use KBASE_TRACE_ADD() instead */
-void kbasep_trace_add(struct kbase_device *kbdev, enum kbase_trace_code code, void *ctx, struct kbase_jd_atom *katom, u64 gpu_addr, u8 flags, int refcount, int jobslot, unsigned long info_val);
-/** PRIVATE - do not use directly. Use KBASE_TRACE_CLEAR() instead */
-void kbasep_trace_clear(struct kbase_device *kbdev);
-#else /* #ifndef CONFIG_MALI_SYSTEM_TRACE */
-/* Dispatch kbase trace events as system trace events */
-#include <mali_linux_kbase_trace.h>
-#define KBASE_TRACE_ADD_SLOT(kbdev, code, ctx, katom, gpu_addr, jobslot)\
-	trace_mali_##code(jobslot, 0)
-
-#define KBASE_TRACE_ADD_SLOT_INFO(kbdev, code, ctx, katom, gpu_addr, jobslot, info_val)\
-	trace_mali_##code(jobslot, info_val)
-
-#define KBASE_TRACE_ADD_REFCOUNT(kbdev, code, ctx, katom, gpu_addr, refcount)\
-	trace_mali_##code(refcount, 0)
-
-#define KBASE_TRACE_ADD_REFCOUNT_INFO(kbdev, code, ctx, katom, gpu_addr, refcount, info_val)\
-	trace_mali_##code(refcount, info_val)
-
-#define KBASE_TRACE_ADD(kbdev, code, ctx, katom, gpu_addr, info_val)\
-	trace_mali_##code(gpu_addr, info_val)
-
-#define KBASE_TRACE_CLEAR(kbdev)\
-	do {\
-		CSTD_UNUSED(kbdev);\
-		CSTD_NOP(0);\
-	} while (0)
-#define KBASE_TRACE_DUMP(kbdev)\
-	do {\
-		CSTD_UNUSED(kbdev);\
-		CSTD_NOP(0);\
-	} while (0)
-
-#endif /* #ifndef CONFIG_MALI_SYSTEM_TRACE */
-#else
-#define KBASE_TRACE_ADD_SLOT(kbdev, code, ctx, katom, gpu_addr, jobslot)\
-	do {\
-		CSTD_UNUSED(kbdev);\
-		CSTD_NOP(code);\
-		CSTD_UNUSED(ctx);\
-		CSTD_UNUSED(katom);\
-		CSTD_UNUSED(gpu_addr);\
-		CSTD_UNUSED(jobslot);\
-	} while (0)
-
-#define KBASE_TRACE_ADD_SLOT_INFO(kbdev, code, ctx, katom, gpu_addr, jobslot, info_val)\
-	do {\
-		CSTD_UNUSED(kbdev);\
-		CSTD_NOP(code);\
-		CSTD_UNUSED(ctx);\
-		CSTD_UNUSED(katom);\
-		CSTD_UNUSED(gpu_addr);\
-		CSTD_UNUSED(jobslot);\
-		CSTD_UNUSED(info_val);\
-		CSTD_NOP(0);\
-	} while (0)
-
-#define KBASE_TRACE_ADD_REFCOUNT(kbdev, code, ctx, katom, gpu_addr, refcount)\
-	do {\
-		CSTD_UNUSED(kbdev);\
-		CSTD_NOP(code);\
-		CSTD_UNUSED(ctx);\
-		CSTD_UNUSED(katom);\
-		CSTD_UNUSED(gpu_addr);\
-		CSTD_UNUSED(refcount);\
-		CSTD_NOP(0);\
-	} while (0)
-
-#define KBASE_TRACE_ADD_REFCOUNT_INFO(kbdev, code, ctx, katom, gpu_addr, refcount, info_val)\
-	do {\
-		CSTD_UNUSED(kbdev);\
-		CSTD_NOP(code);\
-		CSTD_UNUSED(ctx);\
-		CSTD_UNUSED(katom);\
-		CSTD_UNUSED(gpu_addr);\
-		CSTD_UNUSED(info_val);\
-		CSTD_NOP(0);\
-	} while (0)
-
-#define KBASE_TRACE_ADD(kbdev, code, subcode, ctx, katom, val)\
-	do {\
-		CSTD_UNUSED(kbdev);\
-		CSTD_NOP(code);\
-		CSTD_UNUSED(subcode);\
-		CSTD_UNUSED(ctx);\
-		CSTD_UNUSED(katom);\
-		CSTD_UNUSED(val);\
-		CSTD_NOP(0);\
-	} while (0)
-
-#define KBASE_TRACE_CLEAR(kbdev)\
-	do {\
-		CSTD_UNUSED(kbdev);\
-		CSTD_NOP(0);\
-	} while (0)
-#define KBASE_TRACE_DUMP(kbdev)\
-	do {\
-		CSTD_UNUSED(kbdev);\
-		CSTD_NOP(0);\
-	} while (0)
-#endif /* KBASE_TRACE_ENABLE */
-/** PRIVATE - do not use directly. Use KBASE_TRACE_DUMP() instead */
-void kbasep_trace_dump(struct kbase_device *kbdev);
-
-#if defined(CONFIG_DEBUG_FS) && !defined(CONFIG_MALI_NO_MALI)
-
-/* kbase_io_history_init - initialize data struct for register access history
- *
- * @kbdev The register history to initialize
- * @n The number of register accesses that the buffer could hold
- *
- * @return 0 if successfully initialized, failure otherwise
- */
-int kbase_io_history_init(struct kbase_io_history *h, u16 n);
-
-/* kbase_io_history_term - uninit all resources for the register access history
- *
- * @h The register history to terminate
- */
-void kbase_io_history_term(struct kbase_io_history *h);
-
-/* kbase_io_history_dump - print the register history to the kernel ring buffer
- *
- * @kbdev Pointer to kbase_device containing the register history to dump
- */
-void kbase_io_history_dump(struct kbase_device *kbdev);
-
-/**
- * kbase_io_history_resize - resize the register access history buffer.
- *
- * @h: Pointer to a valid register history to resize
- * @new_size: Number of accesses the buffer could hold
- *
- * A successful resize will clear all recent register accesses.
- * If resizing fails for any reason (e.g., could not allocate memory, invalid
- * buffer size) then the original buffer will be kept intact.
- *
- * @return 0 if the buffer was resized, failure otherwise
- */
-int kbase_io_history_resize(struct kbase_io_history *h, u16 new_size);
-
-#else /* CONFIG_DEBUG_FS */
-
-#define kbase_io_history_init(...) ((int)0)
-
-#define kbase_io_history_term CSTD_NOP
-
-#define kbase_io_history_dump CSTD_NOP
-
-#define kbase_io_history_resize CSTD_NOP
-
-#endif /* CONFIG_DEBUG_FS */
-
 
 #endif

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  *
  * (C) COPYRIGHT 2019-2020 ARM Limited. All rights reserved.
@@ -32,12 +33,17 @@
 #include <mali_kbase_model_linux.h>
 #endif
 
+#ifdef CONFIG_MALI_ARBITER_SUPPORT
+#include <arbiter/mali_kbase_arbiter_pm.h>
+#endif
+
 #include <mali_kbase.h>
 #include <backend/gpu/mali_kbase_irq_internal.h>
 #include <backend/gpu/mali_kbase_jm_internal.h>
 #include <backend/gpu/mali_kbase_js_internal.h>
 #include <backend/gpu/mali_kbase_pm_internal.h>
 #include <mali_kbase_dummy_job_wa.h>
+#include <backend/gpu/mali_kbase_clk_rate_trace_mgr.h>
 
 /**
  * kbase_backend_late_init - Perform any backend-specific initialization.
@@ -94,12 +100,15 @@ static int kbase_backend_late_init(struct kbase_device *kbdev)
 	kbase_pm_context_idle(kbdev);
 
 	/* Update gpuprops with L2_FEATURES if applicable */
-	kbase_gpuprops_update_l2_features(kbdev);
+	err = kbase_gpuprops_update_l2_features(kbdev);
+	if (err)
+		goto fail_update_l2_features;
 
 	init_waitqueue_head(&kbdev->hwaccess.backend.reset_wait);
 
 	return 0;
 
+fail_update_l2_features:
 fail_devfreq_init:
 	kbase_job_slot_term(kbdev);
 fail_job_slot:
@@ -146,10 +155,10 @@ static const struct kbase_device_init dev_init[] = {
 	{registers_map, registers_unmap,
 			"Register map failed"},
 #endif
-	{power_control_init, power_control_term,
-			"Power control initialization failed"},
 	{kbase_device_io_history_init, kbase_device_io_history_term,
 			"Register access history initialization failed"},
+	{kbase_device_pm_init, kbase_device_pm_term,
+			"Power management initialization failed"},
 	{kbase_device_early_init, kbase_device_early_term,
 			"Early device initialization failed"},
 	{kbase_device_populate_max_freq, NULL,
@@ -170,8 +179,11 @@ static const struct kbase_device_init dev_init[] = {
 			"Job JS devdata initialization failed"},
 	{kbase_device_timeline_init, kbase_device_timeline_term,
 			"Timeline stream initialization failed"},
-	{kbase_device_hwcnt_backend_gpu_init,
-			kbase_device_hwcnt_backend_gpu_term,
+	{kbase_clk_rate_trace_manager_init,
+			kbase_clk_rate_trace_manager_term,
+			"Clock rate trace manager initialization failed"},
+	{kbase_device_hwcnt_backend_jm_init,
+			kbase_device_hwcnt_backend_jm_term,
 			"GPU hwcnt backend creation failed"},
 	{kbase_device_hwcnt_context_init, kbase_device_hwcnt_context_term,
 			"GPU hwcnt context initialization failed"},

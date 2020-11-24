@@ -27,7 +27,7 @@
 #include <mali_kbase.h>
 #include <gpu/mali_kbase_gpu_fault.h>
 #include <mali_kbase_hwaccess_jm.h>
-#include <backend/gpu/mali_kbase_device_internal.h>
+#include <device/mali_kbase_device.h>
 #include <mali_kbase_as_fault_debugfs.h>
 #include "../mali_kbase_mmu_internal.h"
 
@@ -186,7 +186,17 @@ void kbase_mmu_report_fault_and_kill(struct kbase_context *kctx,
 			KBASE_MMU_FAULT_TYPE_PAGE_UNEXPECTED);
 }
 
-void kbase_mmu_interrupt_process(struct kbase_device *kbdev,
+/**
+ * kbase_mmu_interrupt_process() - Process a bus or page fault.
+ * @kbdev:	The kbase_device the fault happened on
+ * @kctx:	The kbase_context for the faulting address space if one was
+ *		found.
+ * @as:		The address space that has the fault
+ * @fault:	Data relating to the fault
+ *
+ * This function will process a fault on a specific address space
+ */
+static void kbase_mmu_interrupt_process(struct kbase_device *kbdev,
 		struct kbase_context *kctx, struct kbase_as *as,
 		struct kbase_fault *fault)
 {
@@ -338,7 +348,7 @@ void kbase_mmu_interrupt(struct kbase_device *kbdev, u32 irq_stat)
 		 * and a job causing the Bus/Page fault shouldn't complete until
 		 * the MMU is updated
 		 */
-		kctx = kbasep_js_runpool_lookup_ctx(kbdev, as_no);
+		kctx = kbase_ctx_sched_as_to_ctx_refcount(kbdev, as_no);
 
 		/* find faulting address */
 		fault->addr = kbase_reg_read(kbdev, MMU_AS_REG(as_no,
@@ -411,4 +421,20 @@ int kbase_mmu_switch_to_ir(struct kbase_context *const kctx,
 		"Switching to incremental rendering for region %p\n",
 		(void *)reg);
 	return kbase_job_slot_softstop_start_rp(kctx, reg);
+}
+
+int kbase_mmu_as_init(struct kbase_device *kbdev, int i)
+{
+	kbdev->as[i].number = i;
+	kbdev->as[i].bf_data.addr = 0ULL;
+	kbdev->as[i].pf_data.addr = 0ULL;
+
+	kbdev->as[i].pf_wq = alloc_workqueue("mali_mmu%d", 0, 1, i);
+	if (!kbdev->as[i].pf_wq)
+		return -ENOMEM;
+
+	INIT_WORK(&kbdev->as[i].work_pagefault, kbase_mmu_page_fault_worker);
+	INIT_WORK(&kbdev->as[i].work_busfault, kbase_mmu_bus_fault_worker);
+
+	return 0;
 }

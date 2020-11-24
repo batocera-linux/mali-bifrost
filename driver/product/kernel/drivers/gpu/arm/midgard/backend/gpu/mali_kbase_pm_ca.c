@@ -66,7 +66,7 @@ void kbase_devfreq_set_core_mask(struct kbase_device *kbdev, u64 core_mask)
 	}
 
 	if (kbase_dummy_job_wa_enabled(kbdev)) {
-		dev_info_once(kbdev->dev, "Dynamic core scaling not supported as dummy job WA is enabled");
+		dev_err(kbdev->dev, "Dynamic core scaling not supported as dummy job WA is enabled");
 		goto unlock;
 	}
 
@@ -106,6 +106,8 @@ u64 kbase_pm_ca_get_instr_core_mask(struct kbase_device *kbdev)
 
 #ifdef CONFIG_MALI_NO_MALI
 	return (((1ull) << KBASE_DUMMY_MODEL_MAX_SHADER_CORES) - 1);
+#elif MALI_USE_CSF
+	return kbase_pm_get_ready_cores(kbdev, KBASE_PM_CORE_SHADER);
 #else
 	return kbdev->pm.backend.pm_shaders_core_mask;
 #endif

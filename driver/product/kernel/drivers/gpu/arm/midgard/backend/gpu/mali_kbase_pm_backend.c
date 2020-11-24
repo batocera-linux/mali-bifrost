@@ -30,13 +30,16 @@
 #include <mali_kbase_config_defaults.h>
 
 #include <mali_kbase_pm.h>
+#if !MALI_USE_CSF
 #include <mali_kbase_hwaccess_jm.h>
 #include <backend/gpu/mali_kbase_js_internal.h>
 #include <backend/gpu/mali_kbase_jm_internal.h>
+#endif /* !MALI_USE_CSF */
 #include <mali_kbase_hwcnt_context.h>
 #include <backend/gpu/mali_kbase_pm_internal.h>
 #include <backend/gpu/mali_kbase_devfreq.h>
 #include <mali_kbase_dummy_job_wa.h>
+#include <mali_kbase_irq_internal.h>
 
 static void kbase_pm_gpu_poweroff_wait_wq(struct work_struct *data);
 static void kbase_pm_hwcnt_disable_worker(struct work_struct *data);
@@ -105,6 +108,11 @@ void kbase_pm_register_access_enable(struct kbase_device *kbdev)
 	if (callbacks)
 		callbacks->power_on_callback(kbdev);
 
+#ifdef CONFIG_MALI_ARBITER_SUPPORT
+	if (WARN_ON(kbase_pm_is_gpu_lost(kbdev)))
+		dev_err(kbdev->dev, "Attempting to power on while GPU lost\n");
+#endif
+
 	kbdev->pm.backend.gpu_powered = true;
 }
 
@@ -138,7 +146,11 @@ int kbase_hwaccess_pm_init(struct kbase_device *kbdev)
 
 	kbdev->pm.backend.ca_cores_enabled = ~0ull;
 	kbdev->pm.backend.gpu_powered = false;
+	kbdev->pm.backend.gpu_ready = false;
 	kbdev->pm.suspending = false;
+#ifdef CONFIG_MALI_ARBITER_SUPPORT
+	kbase_pm_set_gpu_lost(kbdev, false);
+#endif
 #ifdef CONFIG_MALI_DEBUG
 	kbdev->pm.backend.driver_ready_for_irqs = false;
 #endif /* CONFIG_MALI_DEBUG */
@@ -245,16 +257,21 @@ static void kbase_pm_gpu_poweroff_wait_wq(struct work_struct *data)
 			pm.backend.gpu_poweroff_wait_work);
 	struct kbase_pm_device_data *pm = &kbdev->pm;
 	struct kbase_pm_backend_data *backend = &pm->backend;
-	struct kbasep_js_device_data *js_devdata = &kbdev->js_data;
 	unsigned long flags;
 
+#if !MALI_USE_CSF
 	/* Wait for power transitions to complete. We do this with no locks held
 	 * so that we don't deadlock with any pending workqueues.
 	 */
 	kbase_pm_wait_for_desired_state(kbdev);
+#endif
 
-	mutex_lock(&js_devdata->runpool_mutex);
-	mutex_lock(&kbdev->pm.lock);
+	kbase_pm_lock(kbdev);
+
+#ifdef CONFIG_MALI_ARBITER_SUPPORT
+	if (kbase_pm_is_gpu_lost(kbdev))
+		backend->poweron_required = false;
+#endif
 
 	if (!backend->poweron_required) {
 		unsigned long flags;
@@ -272,11 +289,17 @@ static void kbase_pm_gpu_poweroff_wait_wq(struct work_struct *data)
 			 * process.  Interrupts are disabled so no more faults
 			 * should be generated at this point.
 			 */
-			mutex_unlock(&kbdev->pm.lock);
-			mutex_unlock(&js_devdata->runpool_mutex);
+			kbase_pm_unlock(kbdev);
 			kbase_flush_mmu_wqs(kbdev);
-			mutex_lock(&js_devdata->runpool_mutex);
-			mutex_lock(&kbdev->pm.lock);
+			kbase_pm_lock(kbdev);
+
+#ifdef CONFIG_MALI_ARBITER_SUPPORT
+			/* poweron_required may have changed while pm lock
+			 * was released.
+			 */
+			if (kbase_pm_is_gpu_lost(kbdev))
+				backend->poweron_required = false;
+#endif
 
 			/* Turn off clock now that fault have been handled. We
 			 * dropped locks so poweron_required may have changed -
@@ -296,14 +319,18 @@ static void kbase_pm_gpu_poweroff_wait_wq(struct work_struct *data)
 	if (backend->poweron_required) {
 		backend->poweron_required = false;
 		kbdev->pm.backend.l2_desired = true;
+#if MALI_USE_CSF
+		kbdev->pm.backend.mcu_desired = true;
+#endif
 		kbase_pm_update_state(kbdev);
 		kbase_pm_update_cores_state_nolock(kbdev);
+#if !MALI_USE_CSF
 		kbase_backend_slot_update(kbdev);
+#endif /* !MALI_USE_CSF */
 	}
 	spin_unlock_irqrestore(&kbdev->hwaccess_lock, flags);
 
-	mutex_unlock(&kbdev->pm.lock);
-	mutex_unlock(&js_devdata->runpool_mutex);
+	kbase_pm_unlock(kbdev);
 
 	wake_up(&kbdev->pm.backend.poweroff_wait);
 }
@@ -452,7 +479,9 @@ static void kbase_pm_hwcnt_disable_worker(struct work_struct *data)
 		 */
 		backend->hwcnt_disabled = true;
 		kbase_pm_update_state(kbdev);
+#if !MALI_USE_CSF
 		kbase_backend_slot_update(kbdev);
+#endif /* !MALI_USE_CSF */
 	} else {
 		/* PM state was updated while we were doing the disable,
 		 * so we need to undo the disable we just performed.
@@ -477,8 +506,12 @@ void kbase_pm_do_poweroff(struct kbase_device *kbdev)
 	if (kbdev->pm.backend.poweroff_wait_in_progress)
 		goto unlock_hwaccess;
 
+#if MALI_USE_CSF
+	kbdev->pm.backend.mcu_desired = false;
+#else
 	/* Force all cores off */
 	kbdev->pm.backend.shaders_desired = false;
+#endif
 	kbdev->pm.backend.l2_desired = false;
 
 	kbdev->pm.backend.poweroff_wait_in_progress = true;
@@ -518,14 +551,12 @@ KBASE_EXPORT_TEST_API(kbase_pm_wait_for_poweroff_complete);
 int kbase_hwaccess_pm_powerup(struct kbase_device *kbdev,
 		unsigned int flags)
 {
-	struct kbasep_js_device_data *js_devdata = &kbdev->js_data;
 	unsigned long irq_flags;
 	int ret;
 
 	KBASE_DEBUG_ASSERT(kbdev != NULL);
 
-	mutex_lock(&js_devdata->runpool_mutex);
-	mutex_lock(&kbdev->pm.lock);
+	kbase_pm_lock(kbdev);
 
 	/* A suspend won't happen during startup/insmod */
 	KBASE_DEBUG_ASSERT(!kbase_pm_is_suspending(kbdev));
@@ -534,8 +565,7 @@ int kbase_hwaccess_pm_powerup(struct kbase_device *kbdev,
 	 * them. */
 	ret = kbase_pm_init_hw(kbdev, flags);
 	if (ret) {
-		mutex_unlock(&kbdev->pm.lock);
-		mutex_unlock(&js_devdata->runpool_mutex);
+		kbase_pm_unlock(kbdev);
 		return ret;
 	}
 
@@ -563,10 +593,22 @@ int kbase_hwaccess_pm_powerup(struct kbase_device *kbdev,
 #endif
 	kbase_pm_enable_interrupts(kbdev);
 
+	WARN_ON(!kbdev->pm.backend.gpu_powered);
+	/* GPU has been powered up (by kbase_pm_init_hw) and interrupts have
+	 * been enabled, so GPU is ready for use and PM state machine can be
+	 * exercised from this point onwards.
+	 */
+	kbdev->pm.backend.gpu_ready = true;
+
 	/* Turn on the GPU and any cores needed by the policy */
+#if MALI_USE_CSF
+	/* Turn on the L2 caches, needed for firmware boot */
+	spin_lock_irqsave(&kbdev->hwaccess_lock, irq_flags);
+	kbdev->pm.backend.l2_desired = true;
+	spin_unlock_irqrestore(&kbdev->hwaccess_lock, irq_flags);
+#endif
 	kbase_pm_do_poweron(kbdev, false);
-	mutex_unlock(&kbdev->pm.lock);
-	mutex_unlock(&js_devdata->runpool_mutex);
+	kbase_pm_unlock(kbdev);
 
 	return 0;
 }
@@ -616,7 +658,9 @@ void kbase_pm_power_changed(struct kbase_device *kbdev)
 	spin_lock_irqsave(&kbdev->hwaccess_lock, flags);
 	kbase_pm_update_state(kbdev);
 
+#if !MALI_USE_CSF
 		kbase_backend_slot_update(kbdev);
+#endif /* !MALI_USE_CSF */
 
 	spin_unlock_irqrestore(&kbdev->hwaccess_lock, flags);
 }
@@ -654,20 +698,18 @@ void kbase_hwaccess_pm_gpu_idle(struct kbase_device *kbdev)
 
 void kbase_hwaccess_pm_suspend(struct kbase_device *kbdev)
 {
-	struct kbasep_js_device_data *js_devdata = &kbdev->js_data;
-
 	/* Force power off the GPU and all cores (regardless of policy), only
 	 * after the PM active count reaches zero (otherwise, we risk turning it
 	 * off prematurely) */
-	mutex_lock(&js_devdata->runpool_mutex);
-	mutex_lock(&kbdev->pm.lock);
+	kbase_pm_lock(kbdev);
 
 	kbase_pm_do_poweroff(kbdev);
 
+#if !MALI_USE_CSF
 	kbase_backend_timer_suspend(kbdev);
+#endif /* !MALI_USE_CSF */
 
-	mutex_unlock(&kbdev->pm.lock);
-	mutex_unlock(&js_devdata->runpool_mutex);
+	kbase_pm_unlock(kbdev);
 
 	kbase_pm_wait_for_poweroff_complete(kbdev);
 
@@ -677,16 +719,70 @@ void kbase_hwaccess_pm_suspend(struct kbase_device *kbdev)
 
 void kbase_hwaccess_pm_resume(struct kbase_device *kbdev)
 {
-	struct kbasep_js_device_data *js_devdata = &kbdev->js_data;
-
-	mutex_lock(&js_devdata->runpool_mutex);
-	mutex_lock(&kbdev->pm.lock);
+	kbase_pm_lock(kbdev);
 
 	kbdev->pm.suspending = false;
+#ifdef CONFIG_MALI_ARBITER_SUPPORT
+	if (kbase_pm_is_gpu_lost(kbdev)) {
+		dev_dbg(kbdev->dev, "%s: GPU lost in progress\n", __func__);
+		kbase_pm_unlock(kbdev);
+		return;
+	}
+#endif
 	kbase_pm_do_poweron(kbdev, true);
 
+#if !MALI_USE_CSF
 	kbase_backend_timer_resume(kbdev);
+#endif /* !MALI_USE_CSF */
 
-	mutex_unlock(&kbdev->pm.lock);
-	mutex_unlock(&js_devdata->runpool_mutex);
+	kbase_pm_unlock(kbdev);
 }
+
+#ifdef CONFIG_MALI_ARBITER_SUPPORT
+void kbase_pm_handle_gpu_lost(struct kbase_device *kbdev)
+{
+	unsigned long flags;
+	ktime_t end_timestamp = ktime_get();
+	struct kbase_arbiter_vm_state *arb_vm_state = kbdev->pm.arb_vm_state;
+
+	mutex_lock(&kbdev->pm.lock);
+	mutex_lock(&arb_vm_state->vm_state_lock);
+	if (kbdev->pm.backend.gpu_powered &&
+			!kbase_pm_is_gpu_lost(kbdev)) {
+		kbase_pm_set_gpu_lost(kbdev, true);
+
+		/* GPU is no longer mapped to VM.  So no interrupts will
+		 * be received and Mali registers have been replaced by
+		 * dummy RAM
+		 */
+		WARN(!kbase_is_gpu_removed(kbdev),
+			"GPU is still available after GPU lost event\n");
+
+		/* Full GPU reset will have been done by hypervisor, so
+		 * cancel
+		 */
+		atomic_set(&kbdev->hwaccess.backend.reset_gpu,
+				KBASE_RESET_GPU_NOT_PENDING);
+		hrtimer_cancel(&kbdev->hwaccess.backend.reset_timer);
+		kbase_synchronize_irqs(kbdev);
+
+		/* Clear all jobs running on the GPU */
+		spin_lock_irqsave(&kbdev->hwaccess_lock, flags);
+		kbdev->protected_mode = false;
+		kbase_backend_reset(kbdev, &end_timestamp);
+		kbase_pm_metrics_update(kbdev, NULL);
+		kbase_pm_update_state(kbdev);
+		spin_unlock_irqrestore(&kbdev->hwaccess_lock, flags);
+
+		/* Cancel any pending HWC dumps */
+		spin_lock_irqsave(&kbdev->hwcnt.lock, flags);
+		kbdev->hwcnt.backend.state = KBASE_INSTR_STATE_IDLE;
+		kbdev->hwcnt.backend.triggered = 1;
+		wake_up(&kbdev->hwcnt.backend.wait);
+		spin_unlock_irqrestore(&kbdev->hwcnt.lock, flags);
+	}
+	mutex_unlock(&arb_vm_state->vm_state_lock);
+	mutex_unlock(&kbdev->pm.lock);
+}
+
+#endif /* CONFIG_MALI_ARBITER_SUPPORT */

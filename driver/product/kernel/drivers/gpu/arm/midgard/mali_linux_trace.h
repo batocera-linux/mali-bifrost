@@ -181,6 +181,23 @@ TRACE_EVENT(mali_total_alloc_pages_change,
 		__print_symbolic(KBASE_MMU_FAULT_STATUS_ACCESS(status), \
 				KBASE_MMU_FAULT_ACCESS_SYMBOLIC_STRINGS)
 
+#if MALI_USE_CSF
+#define KBASE_MMU_FAULT_CODE_VALID(code) \
+		((code >= 0xC0 && code <= 0xEB) && \
+		(!(code >= 0xC5 && code <= 0xC7)) && \
+		(!(code >= 0xCC && code <= 0xD8)) && \
+		(!(code >= 0xDC && code <= 0xDF)) && \
+		(!(code >= 0xE1 && code <= 0xE3)))
+#define KBASE_MMU_FAULT_CODE_SYMBOLIC_STRINGS _ENSURE_PARENTHESIS(\
+		{0xC0, "TRANSLATION_FAULT_" }, \
+		{0xC4, "TRANSLATION_FAULT_" }, \
+		{0xC8, "PERMISSION_FAULT_" }, \
+		{0xD0, "TRANSTAB_BUS_FAULT_" }, \
+		{0xD8, "ACCESS_FLAG_" }, \
+		{0xE0, "ADDRESS_SIZE_FAULT_IN" }, \
+		{0xE4, "ADDRESS_SIZE_FAULT_OUT" }, \
+		{0xE8, "MEMORY_ATTRIBUTES_FAULT_" })
+#else /* MALI_USE_CSF */
 #define KBASE_MMU_FAULT_CODE_VALID(code) \
 	((code >= 0xC0 && code <= 0xEF) && \
 		(!(code >= 0xC5 && code <= 0xC6)) && \
@@ -197,6 +214,7 @@ TRACE_EVENT(mali_total_alloc_pages_change,
 		{0xE4, "ADDRESS_SIZE_FAULT_OUT" }, \
 		{0xE8, "MEMORY_ATTRIBUTES_FAULT_" }, \
 		{0xEC, "MEMORY_ATTRIBUTES_NONCACHEABLE_" })
+#endif /* MALI_USE_CSF */
 #endif /* __TRACE_MALI_MMU_HELPERS */
 
 /* trace_mali_mmu_page_fault_grow
@@ -288,7 +306,8 @@ DEFINE_EVENT_PRINT(mali_jit_softjob_template, mali_jit_free,
 	TP_printk("start=0x%llx va_pages=0x%zx backed_size=0x%zx",
 		__entry->start_addr, __entry->nr_pages, __entry->backed_pages));
 
-#if MALI_JIT_PRESSURE_LIMIT && !MALI_USE_CSF
+#if !MALI_USE_CSF
+#if MALI_JIT_PRESSURE_LIMIT_BASE
 /* trace_mali_jit_report
  *
  * Tracepoint about the GPU data structure read to form a just-in-time memory
@@ -326,11 +345,14 @@ TRACE_EVENT(mali_jit_report,
 		),
 		__entry->read_val, __entry->used_pages)
 );
-#endif /* MALI_JIT_PRESSURE_LIMIT && !MALI_USE_CSF */
+#endif /* MALI_JIT_PRESSURE_LIMIT_BASE */
+#endif /* !MALI_USE_CSF */
 
+#if (KERNEL_VERSION(4, 1, 0) <= LINUX_VERSION_CODE)
 TRACE_DEFINE_ENUM(KBASE_JIT_REPORT_ON_ALLOC_OR_FREE);
+#endif
 
-#if MALI_JIT_PRESSURE_LIMIT
+#if MALI_JIT_PRESSURE_LIMIT_BASE
 /* trace_mali_jit_report_pressure
  *
  * Tracepoint about change in physical memory pressure, due to the information
@@ -364,7 +386,71 @@ TRACE_EVENT(mali_jit_report_pressure,
 			{ KBASE_JIT_REPORT_ON_ALLOC_OR_FREE,
 				"HAPPENED_ON_ALLOC_OR_FREE" }))
 );
-#endif /* MALI_JIT_PRESSURE_LIMIT */
+#endif /* MALI_JIT_PRESSURE_LIMIT_BASE */
+
+#ifndef __TRACE_SYSGRAPH_ENUM
+#define __TRACE_SYSGRAPH_ENUM
+/* Enum of sysgraph message IDs */
+enum sysgraph_msg {
+	SGR_ARRIVE,
+	SGR_DEP_RES,
+	SGR_SUBMIT,
+	SGR_COMPLETE,
+	SGR_POST,
+	SGR_ACTIVE,
+	SGR_INACTIVE
+};
+#endif /* __TRACE_SYSGRAPH_ENUM */
+
+/* A template for SYSGRAPH events
+ *
+ * Most of the sysgraph events contain only one input argument
+ * which is atom_id therefore they will be using a common template
+ */
+TRACE_EVENT(sysgraph,
+	TP_PROTO(enum sysgraph_msg message, unsigned int proc_id,
+		unsigned int atom_id),
+	TP_ARGS(message, proc_id, atom_id),
+	TP_STRUCT__entry(
+		__field(unsigned int, proc_id)
+		__field(enum sysgraph_msg, message)
+		__field(unsigned int, atom_id)
+	),
+	TP_fast_assign(
+		__entry->proc_id    = proc_id;
+		__entry->message    = message;
+		__entry->atom_id    = atom_id;
+	),
+	TP_printk("msg=%u proc_id=%u, param1=%d\n", __entry->message,
+		 __entry->proc_id,  __entry->atom_id)
+);
+
+/* A template for SYSGRAPH GPU events
+ *
+ * Sysgraph events that record start/complete events
+ * on GPU also record a js value in addition to the
+ * atom id.
+ */
+TRACE_EVENT(sysgraph_gpu,
+	TP_PROTO(enum sysgraph_msg message, unsigned int proc_id,
+		unsigned int atom_id, unsigned int js),
+	TP_ARGS(message, proc_id, atom_id, js),
+	TP_STRUCT__entry(
+		__field(unsigned int, proc_id)
+		__field(enum sysgraph_msg, message)
+		__field(unsigned int, atom_id)
+		__field(unsigned int, js)
+	),
+	TP_fast_assign(
+		__entry->proc_id    = proc_id;
+		__entry->message    = message;
+		__entry->atom_id    = atom_id;
+		__entry->js         = js;
+	),
+	TP_printk("msg=%u proc_id=%u, param1=%d, param2=%d\n",
+		  __entry->message,  __entry->proc_id,
+		  __entry->atom_id, __entry->js)
+);
 
 /* Tracepoint files get included more than once - protect against multiple
  * definition
@@ -450,9 +536,14 @@ TRACE_EVENT(mali_jit_trim,
 	TP_printk("freed_pages=%zu", __entry->freed_pages)
 );
 
+#include "mali_kbase_debug_linux_ktrace.h"
+
 #endif /* _TRACE_MALI_H */
 
 #undef TRACE_INCLUDE_PATH
+/* lwn.net/Articles/383362 suggests this should remain as '.', and instead
+ * extend CFLAGS
+ */
 #define TRACE_INCLUDE_PATH .
 #undef  TRACE_INCLUDE_FILE
 #define TRACE_INCLUDE_FILE mali_linux_trace

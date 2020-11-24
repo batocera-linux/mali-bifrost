@@ -39,8 +39,10 @@ bob_defaults {
         kernel_cc: "{{.kernel_cc}}",
         kernel_hostcc: "{{.kernel_hostcc}}",
         kernel_clang_triple: "{{.kernel_clang_triple}}",
+        kernel_ld: "{{.kernel_ld}}",
     },
     install_group: "IG_kernel_modules",
+    owner: "{{.android_module_owner}}",
     cflags: [
         "-Wall",
     ],
@@ -54,6 +56,8 @@ bob_defaults {
         ],
     },
     kbuild_options: [
+        "MALI_JIT_PRESSURE_LIMIT_BASE={{.jit_pressure_limit_base}}",
+
         // Start of CS experimental features definitions.
         // If there is nothing below, definition should be added as follows:
         // "MALI_EXPERIMENTAL_FEATURE={{.experimental_feature}}"
@@ -67,7 +71,6 @@ bob_defaults {
         // is an umbrella feature that would be open for inappropriate use
         // (catch-all for experimental CS code without separating it into
         // different features).
-        "MALI_JIT_PRESSURE_LIMIT={{.jit_pressure_limit}}",
         "MALI_INCREMENTAL_RENDERING={{.incremental_rendering}}",
     ],
 }
@@ -86,6 +89,8 @@ bob_defaults {
         "drivers/gpu/arm",
         "drivers/gpu/arm/midgard",
         "drivers/gpu/arm/midgard/backend/gpu",
+        "drivers/gpu/arm/midgard/debug",
+        "drivers/gpu/arm/midgard/debug/backend",
     ],
 }
 

@@ -32,8 +32,10 @@
 #include <linux/dma-mapping.h>
 #include <mali_base_kernel.h>
 #include <mali_kbase_hwaccess_time.h>
+#include <mali_kbase_kinstr_jm.h>
 #include <mali_kbase_mem_linux.h>
 #include <tl/mali_kbase_tracepoints.h>
+#include <mali_linux_trace.h>
 #include <linux/version.h>
 #include <linux/ktime.h>
 #include <linux/pfn.h>
@@ -41,6 +43,7 @@
 #include <linux/kernel.h>
 #include <linux/cache.h>
 
+#if !MALI_USE_CSF
 /**
  * @file mali_kbase_softjobs.c
  *
@@ -718,6 +721,7 @@ out_cleanup:
 
 	return ret;
 }
+#endif /* !MALI_USE_CSF */
 
 #if LINUX_VERSION_CODE >= KERNEL_VERSION(5, 6, 0)
 static void *dma_buf_kmap_page(struct kbase_mem_phy_alloc *gpu_alloc,
@@ -845,6 +849,7 @@ out_unlock:
 	return ret;
 }
 
+#if !MALI_USE_CSF
 static int kbase_debug_copy(struct kbase_jd_atom *katom)
 {
 	struct kbase_debug_copy_buffer *buffers = katom->softjob_data;
@@ -862,6 +867,7 @@ static int kbase_debug_copy(struct kbase_jd_atom *katom)
 
 	return 0;
 }
+#endif /* !MALI_USE_CSF */
 
 #define KBASEP_JIT_ALLOC_GPU_ADDR_ALIGNMENT ((u32)0x7)
 
@@ -898,7 +904,7 @@ int kbasep_jit_alloc_validate(struct kbase_context *kctx,
 	if (info->flags & ~(BASE_JIT_ALLOC_VALID_FLAGS))
 		return -EINVAL;
 
-#if !MALI_JIT_PRESSURE_LIMIT
+#if !MALI_JIT_PRESSURE_LIMIT_BASE
 	/* If just-in-time memory allocation pressure limit feature is disabled,
 	 * heap_info_gpu_addr must be zeroed-out
 	 */
@@ -906,15 +912,24 @@ int kbasep_jit_alloc_validate(struct kbase_context *kctx,
 		return -EINVAL;
 #endif
 
+#if !MALI_USE_CSF
 	/* If BASE_JIT_ALLOC_HEAP_INFO_IS_SIZE is set, heap_info_gpu_addr
 	 * cannot be 0
 	 */
 	if ((info->flags & BASE_JIT_ALLOC_HEAP_INFO_IS_SIZE) &&
 			!info->heap_info_gpu_addr)
 		return -EINVAL;
+#endif /* !MALI_USE_CSF */
 
 	return 0;
 }
+
+#if !MALI_USE_CSF
+
+#if (KERNEL_VERSION(3, 18, 63) > LINUX_VERSION_CODE)
+#define offsetofend(TYPE, MEMBER) \
+	(offsetof(TYPE, MEMBER) + sizeof(((TYPE *)0)->MEMBER))
+#endif
 
 /*
  * Sizes of user data to copy for each just-in-time memory interface version
@@ -1000,7 +1015,7 @@ static int kbase_jit_allocate_prepare(struct kbase_jd_atom *katom)
 	katom->jit_blocked = false;
 
 	lockdep_assert_held(&kctx->jctx.lock);
-	list_add_tail(&katom->jit_node, &kctx->jit_atoms_head);
+	list_add_tail(&katom->jit_node, &kctx->jctx.jit_atoms_head);
 
 	/*
 	 * Note:
@@ -1037,7 +1052,7 @@ static void kbase_jit_add_to_pending_alloc_list(struct kbase_jd_atom *katom)
 	struct list_head *target_list_head = NULL;
 	struct kbase_jd_atom *entry;
 
-	list_for_each_entry(entry, &kctx->jit_pending_alloc, queue) {
+	list_for_each_entry(entry, &kctx->jctx.jit_pending_alloc, queue) {
 		if (katom->age < entry->age) {
 			target_list_head = &entry->queue;
 			break;
@@ -1045,7 +1060,7 @@ static void kbase_jit_add_to_pending_alloc_list(struct kbase_jd_atom *katom)
 	}
 
 	if (target_list_head == NULL)
-		target_list_head = &kctx->jit_pending_alloc;
+		target_list_head = &kctx->jctx.jit_pending_alloc;
 
 	list_add_tail(&katom->queue, target_list_head);
 }
@@ -1060,6 +1075,10 @@ static int kbase_jit_allocate_process(struct kbase_jd_atom *katom)
 	u64 *ptr, new_addr;
 	u32 count = katom->nr_extres;
 	u32 i;
+	bool ignore_pressure_limit = false;
+
+	trace_sysgraph(SGR_SUBMIT, kctx->id,
+			kbase_jd_atom_id(kctx, katom));
 
 	if (katom->jit_blocked) {
 		list_del(&katom->queue);
@@ -1080,6 +1099,20 @@ static int kbase_jit_allocate_process(struct kbase_jd_atom *katom)
 		}
 	}
 
+#if MALI_JIT_PRESSURE_LIMIT_BASE
+	/**
+	 * If this is the only JIT_ALLOC atom in-flight or if JIT pressure limit
+	 * is disabled at the context scope, then bypass JIT pressure limit
+	 * logic in kbase_jit_allocate().
+	 */
+	if (!kbase_ctx_flag(kctx, KCTX_JPL_ENABLED)
+		|| (kctx->jit_current_allocations == 0)) {
+		ignore_pressure_limit = true;
+	}
+#else
+	ignore_pressure_limit = true;
+#endif /* MALI_JIT_PRESSURE_LIMIT_BASE */
+
 	for (i = 0, info = katom->softjob_data; i < count; i++, info++) {
 		if (kctx->jit_alloc[info->id]) {
 			/* The JIT ID is duplicated in this atom. Roll back
@@ -1099,17 +1132,14 @@ static int kbase_jit_allocate_process(struct kbase_jd_atom *katom)
 		}
 
 		/* Create a JIT allocation */
-		reg = kbase_jit_allocate(kctx, info);
+		reg = kbase_jit_allocate(kctx, info, ignore_pressure_limit);
 		if (!reg) {
 			struct kbase_jd_atom *jit_atom;
 			bool can_block = false;
 
 			lockdep_assert_held(&kctx->jctx.lock);
 
-			jit_atom = list_first_entry(&kctx->jit_atoms_head,
-					struct kbase_jd_atom, jit_node);
-
-			list_for_each_entry(jit_atom, &kctx->jit_atoms_head, jit_node) {
+			list_for_each_entry(jit_atom, &kctx->jctx.jit_atoms_head, jit_node) {
 				if (jit_atom == katom)
 					break;
 
@@ -1280,7 +1310,7 @@ static int kbase_jit_free_prepare(struct kbase_jd_atom *katom)
 	for (i = 0; i < count; i++)
 		KBASE_TLSTREAM_TL_ATTRIB_ATOM_JITFREEINFO(kbdev, katom, ids[i]);
 
-	list_add_tail(&katom->jit_node, &kctx->jit_atoms_head);
+	list_add_tail(&katom->jit_node, &kctx->jctx.jit_atoms_head);
 
 	return 0;
 
@@ -1335,18 +1365,22 @@ void kbase_jit_retry_pending_alloc(struct kbase_context *kctx)
 	LIST_HEAD(jit_pending_alloc_list);
 	struct list_head *i, *tmp;
 
-	list_splice_tail_init(&kctx->jit_pending_alloc,
+	list_splice_tail_init(&kctx->jctx.jit_pending_alloc,
 		&jit_pending_alloc_list);
 
 	list_for_each_safe(i, tmp, &jit_pending_alloc_list) {
 		struct kbase_jd_atom *pending_atom = list_entry(i,
 				struct kbase_jd_atom, queue);
+		KBASE_TLSTREAM_TL_EVENT_ATOM_SOFTJOB_START(kctx->kbdev, pending_atom);
+		kbase_kinstr_jm_atom_sw_start(pending_atom);
 		if (kbase_jit_allocate_process(pending_atom) == 0) {
 			/* Atom has completed */
 			INIT_WORK(&pending_atom->work,
 					kbasep_jit_finish_worker);
 			queue_work(kctx->jctx.job_done_wq, &pending_atom->work);
 		}
+		KBASE_TLSTREAM_TL_EVENT_ATOM_SOFTJOB_END(kctx->kbdev, pending_atom);
+		kbase_kinstr_jm_atom_sw_stop(pending_atom);
 	}
 }
 
@@ -1363,7 +1397,7 @@ static void kbase_jit_free_finish(struct kbase_jd_atom *katom)
 		return;
 	}
 
-	/* Remove this atom from the kctx->jit_atoms_head list */
+	/* Remove this atom from the jit_atoms_head list */
 	list_del(&katom->jit_node);
 
 	for (j = 0; j != katom->nr_extres; ++j) {
@@ -1521,6 +1555,10 @@ int kbase_process_soft_job(struct kbase_jd_atom *katom)
 	struct kbase_device *kbdev = kctx->kbdev;
 
 	KBASE_TLSTREAM_TL_EVENT_ATOM_SOFTJOB_START(kbdev, katom);
+	kbase_kinstr_jm_atom_sw_start(katom);
+
+	trace_sysgraph(SGR_SUBMIT, kctx->id,
+			kbase_jd_atom_id(kctx, katom));
 
 	switch (katom->core_req & BASE_JD_REQ_SOFT_JOB_TYPE) {
 	case BASE_JD_REQ_SOFT_DUMP_CPU_GPU_TIME:
@@ -1580,6 +1618,7 @@ int kbase_process_soft_job(struct kbase_jd_atom *katom)
 
 	/* Atom is complete */
 	KBASE_TLSTREAM_TL_EVENT_ATOM_SOFTJOB_END(kbdev, katom);
+	kbase_kinstr_jm_atom_sw_stop(katom);
 	return ret;
 }
 
@@ -1684,6 +1723,9 @@ int kbase_prepare_soft_job(struct kbase_jd_atom *katom)
 
 void kbase_finish_soft_job(struct kbase_jd_atom *katom)
 {
+	trace_sysgraph(SGR_COMPLETE, katom->kctx->id,
+			kbase_jd_atom_id(katom->kctx, katom));
+
 	switch (katom->core_req & BASE_JD_REQ_SOFT_JOB_TYPE) {
 	case BASE_JD_REQ_SOFT_DUMP_CPU_GPU_TIME:
 		/* Nothing to do */
@@ -1760,3 +1802,4 @@ void kbase_resume_suspended_soft_jobs(struct kbase_device *kbdev)
 	if (resched)
 		kbase_js_sched_all(kbdev);
 }
+#endif /* !MALI_USE_CSF */

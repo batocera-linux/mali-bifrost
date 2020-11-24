@@ -25,6 +25,7 @@
 #include <mali_kbase.h>
 #include <mali_kbase_debug.h>
 #include <tl/mali_kbase_tracepoints.h>
+#include <mali_linux_trace.h>
 
 static struct base_jd_udata kbase_event_process(struct kbase_context *kctx, struct kbase_jd_atom *katom)
 {
@@ -167,6 +168,16 @@ void kbase_event_post(struct kbase_context *ctx, struct kbase_jd_atom *atom)
 
 	dev_dbg(kbdev->dev, "Posting event for atom %p\n", (void *)atom);
 
+	if (WARN_ON(atom->status != KBASE_JD_ATOM_STATE_COMPLETED)) {
+		dev_warn(kbdev->dev,
+				"%s: Atom %d (%p) not completed (status %d)\n",
+				__func__,
+				kbase_jd_atom_id(atom->kctx, atom),
+				atom->kctx,
+				atom->status);
+		return;
+	}
+
 	if (atom->core_req & BASE_JD_REQ_EVENT_ONLY_ON_FAILURE) {
 		if (atom->event_code == BASE_JD_EVENT_DONE) {
 			dev_dbg(kbdev->dev, "Suppressing event (atom done)\n");
@@ -200,6 +211,10 @@ void kbase_event_post(struct kbase_context *ctx, struct kbase_jd_atom *atom)
 		dev_dbg(kbdev->dev, "Reporting %d events\n", event_count);
 
 		kbase_event_wakeup(ctx);
+
+		/* Post-completion latency */
+		trace_sysgraph(SGR_POST, ctx->id,
+					kbase_jd_atom_id(ctx, atom));
 	}
 }
 KBASE_EXPORT_TEST_API(kbase_event_post);

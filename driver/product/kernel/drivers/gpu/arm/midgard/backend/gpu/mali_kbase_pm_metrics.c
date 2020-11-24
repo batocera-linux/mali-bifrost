@@ -1,6 +1,6 @@
 /*
  *
- * (C) COPYRIGHT 2011-2019 ARM Limited. All rights reserved.
+ * (C) COPYRIGHT 2011-2020 ARM Limited. All rights reserved.
  *
  * This program is free software and is provided to you under the terms of the
  * GNU General Public License version 2 as published by the Free Software
@@ -29,8 +29,11 @@
 #include <mali_kbase.h>
 #include <mali_kbase_pm.h>
 #include <backend/gpu/mali_kbase_pm_internal.h>
+#if !MALI_USE_CSF
 #include <backend/gpu/mali_kbase_jm_rb.h>
+#endif /* !MALI_USE_CSF */
 #include <backend/gpu/mali_kbase_pm_defs.h>
+#include <mali_linux_trace.h>
 
 /* When VSync is being hit aim for utilisation between 70-90% */
 #define KBASE_PM_VSYNC_MIN_UTILISATION          70
@@ -245,6 +248,7 @@ void kbase_pm_metrics_stop(struct kbase_device *kbdev)
 
 #endif /* CONFIG_MALI_MIDGARD_DVFS */
 
+#if !MALI_USE_CSF
 /**
  * kbase_pm_metrics_active_calc - Update PM active counts based on currently
  *                                running atoms
@@ -284,11 +288,15 @@ static void kbase_pm_metrics_active_calc(struct kbase_device *kbdev)
 						active_cl_ctx[device_nr] = 1;
 			} else {
 				kbdev->pm.backend.metrics.active_gl_ctx[js] = 1;
+				trace_sysgraph(SGR_ACTIVE, 0, js);
 			}
 			kbdev->pm.backend.metrics.gpu_active = true;
+		} else {
+			trace_sysgraph(SGR_INACTIVE, 0, js);
 		}
 	}
 }
+#endif /* !MALI_USE_CSF */
 
 /* called when job is submitted to or removed from a GPU slot */
 void kbase_pm_metrics_update(struct kbase_device *kbdev, ktime_t *timestamp)
@@ -308,7 +316,9 @@ void kbase_pm_metrics_update(struct kbase_device *kbdev, ktime_t *timestamp)
 	/* Track how long CL and/or GL jobs have been busy for */
 	kbase_pm_get_dvfs_utilisation_calc(kbdev, *timestamp);
 
+#if !MALI_USE_CSF
 	kbase_pm_metrics_active_calc(kbdev);
+#endif /* !MALI_USE_CSF */
 
 	spin_unlock_irqrestore(&kbdev->pm.backend.metrics.lock, flags);
 }

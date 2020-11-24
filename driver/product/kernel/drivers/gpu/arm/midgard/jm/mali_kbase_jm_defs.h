@@ -30,8 +30,10 @@
 #ifndef _KBASE_JM_DEFS_H_
 #define _KBASE_JM_DEFS_H_
 
-/* Dump Job slot trace on error (only active if KBASE_TRACE_ENABLE != 0) */
-#define KBASE_TRACE_DUMP_ON_JOB_SLOT_ERROR 1
+#include "mali_kbase_js_defs.h"
+
+/* Dump Job slot trace on error (only active if KBASE_KTRACE_ENABLE != 0) */
+#define KBASE_KTRACE_DUMP_ON_JOB_SLOT_ERROR 1
 
 /*
  * Number of milliseconds before resetting the GPU when a job cannot be "zapped"
@@ -494,9 +496,9 @@ struct kbase_jd_atom {
 	struct list_head jd_item;
 	bool in_jd_list;
 
-#if MALI_JIT_PRESSURE_LIMIT
+#if MALI_JIT_PRESSURE_LIMIT_BASE
 	u8 jit_ids[2];
-#endif /* MALI_JIT_PRESSURE_LIMIT */
+#endif /* MALI_JIT_PRESSURE_LIMIT_BASE */
 
 	u16 nr_extres;
 	struct kbase_ext_res *extres;
@@ -605,6 +607,9 @@ struct kbase_jd_atom {
 	bool need_cache_flush_cores_retained;
 
 	atomic_t blocked;
+
+	/* user-space sequence number, to order atoms in some temporal order */
+	u64 seq_nr;
 
 	struct kbase_jd_atom *pre_dep;
 	struct kbase_jd_atom *post_dep;
@@ -770,6 +775,12 @@ struct kbase_jd_renderpass {
  *                            reaching this offset.
  * @work_id:                  atomic variable used for GPU tracepoints,
  *                            incremented on every call to base_jd_submit.
+ * @jit_atoms_head:           A list of the just-in-time memory soft-jobs, both
+ *                            allocate & free, in submission order, protected
+ *                            by kbase_jd_context.lock.
+ * @jit_pending_alloc:        A list of just-in-time memory allocation
+ *                            soft-jobs which will be reattempted after the
+ *                            impending free of other active allocations.
  */
 struct kbase_jd_context {
 	struct mutex lock;
@@ -787,6 +798,9 @@ struct kbase_jd_context {
 #ifdef CONFIG_GPU_TRACEPOINTS
 	atomic_t work_id;
 #endif
+
+	struct list_head jit_atoms_head;
+	struct list_head jit_pending_alloc;
 };
 
 /**
@@ -802,6 +816,29 @@ struct kbase_jd_context {
 struct jsctx_queue {
 	struct rb_root runnable_tree;
 	struct list_head x_dep_head;
+};
+
+/**
+ * struct kbase_as   - Object representing an address space of GPU.
+ * @number:            Index at which this address space structure is present
+ *                     in an array of address space structures embedded inside
+ *                     the &struct kbase_device.
+ * @pf_wq:             Workqueue for processing work items related to
+ *                     Page fault and Bus fault handling.
+ * @work_pagefault:    Work item for the Page fault handling.
+ * @work_busfault:     Work item for the Bus fault handling.
+ * @pf_data:           Data relating to Page fault.
+ * @bf_data:           Data relating to Bus fault.
+ * @current_setup:     Stores the MMU configuration for this address space.
+ */
+struct kbase_as {
+	int number;
+	struct workqueue_struct *pf_wq;
+	struct work_struct work_pagefault;
+	struct work_struct work_busfault;
+	struct kbase_fault pf_data;
+	struct kbase_fault bf_data;
+	struct kbase_mmu_setup current_setup;
 };
 
 #endif /* _KBASE_JM_DEFS_H_ */

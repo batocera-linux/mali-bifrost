@@ -1,6 +1,6 @@
 /*
  *
- * (C) COPYRIGHT 2014,2018-2019 ARM Limited. All rights reserved.
+ * (C) COPYRIGHT 2014,2018-2020 ARM Limited. All rights reserved.
  *
  * This program is free software and is provided to you under the terms of the
  * GNU General Public License version 2 as published by the Free Software
@@ -38,5 +38,19 @@
  */
 void kbase_backend_get_gpu_time(struct kbase_device *kbdev, u64 *cycle_counter,
 				u64 *system_time, struct timespec64 *ts);
+
+/**
+ * kbase_backend_get_gpu_time_norequest() - Get current GPU time without
+ *                                          request/release cycle counter
+ * @kbdev:		Device pointer
+ * @cycle_counter:	Pointer to u64 to store cycle counter in
+ * @system_time:	Pointer to u64 to store system time in
+ * @ts:			Pointer to struct timespec to store current monotonic
+ *			time in
+ */
+void kbase_backend_get_gpu_time_norequest(struct kbase_device *kbdev,
+					  u64 *cycle_counter,
+					  u64 *system_time,
+					  struct timespec64 *ts);
 
 #endif /* _KBASE_BACKEND_TIME_H_ */

@@ -819,10 +819,10 @@ void kbase_kinstr_jm_term(struct kbase_kinstr_jm *const ctx)
  */
 static u64 timestamp(void)
 {
-	struct timespec ts;
+	struct timespec64 ts;
 	long ns;
 
-	getrawmonotonic(&ts);
+	ktime_get_raw_ts64(&ts);
 	ns = ((long)(ts.tv_sec) * NSEC_PER_SEC) + ts.tv_nsec;
 	if (unlikely(ns < 0))
 		return 0;

@@ -50,6 +50,8 @@
  * @rmem_base:			Base address of the reserved memory region
  * @rmem_size:			Size of the reserved memory region, in pages
  * @num_free_pages:		Number of free pages in the memory region
+ * @rmem_lock:			Lock to serialize the allocation and freeing of
+ *				physical pages from the protected memory region
  */
 struct simple_pma_device {
 	struct protected_memory_allocator_device pma_dev;
@@ -58,6 +60,7 @@ struct simple_pma_device {
 	phys_addr_t rmem_base;
 	size_t rmem_size;
 	size_t num_free_pages;
+	spinlock_t rmem_lock;
 };
 
 /**
@@ -79,15 +82,19 @@ struct simple_pma_device {
  * This routine always works within only a single allocated-pages bitfield element.
  * It can be thought of as the 'small-granularity' allocator.
  */
-static struct protected_memory_allocation *small_granularity_alloc(
-	struct simple_pma_device *const epma_dev,
-	size_t alloc_bitfield_idx, size_t start_bit, size_t order)
+static void small_granularity_alloc(struct simple_pma_device *const epma_dev,
+				    size_t alloc_bitfield_idx, size_t start_bit,
+				    size_t order,
+				    struct protected_memory_allocation *pma)
 {
 	size_t i;
 	size_t page_idx;
 	u64 *bitfield;
-	struct protected_memory_allocation *pma;
 	size_t alloc_pages_bitfield_size;
+
+	if (WARN_ON(!epma_dev) ||
+	    WARN_ON(!pma))
+		return;
 
 	WARN(0 == epma_dev->rmem_size, "%s: rmem_size is 0", __FUNCTION__);
 	alloc_pages_bitfield_size = ALLOC_PAGES_BITFIELD_ARR_SIZE(epma_dev->rmem_size);
@@ -99,13 +106,6 @@ static struct protected_memory_allocation *small_granularity_alloc(
 	WARN((start_bit + (1 << order)) > PAGES_PER_BITFIELD_ELEM,
 	     "%s: start=%zu order=%zu ppbe=%zu",
 	     __FUNCTION__, start_bit, order, PAGES_PER_BITFIELD_ELEM);
-
-	pma = devm_kzalloc(epma_dev->dev, sizeof(*pma), GFP_KERNEL);
-
-	if (!pma) {
-		dev_err(epma_dev->dev, "Failed to alloc pma struct");
-		return NULL;
-	}
 
 	bitfield = &epma_dev->allocated_pages_bitfield_arr[alloc_bitfield_idx];
 
@@ -125,8 +125,6 @@ static struct protected_memory_allocation *small_granularity_alloc(
 	/* Fill-in the allocation struct for the caller */
 	pma->pa = epma_dev->rmem_base + (page_idx << PAGE_SHIFT);
 	pma->order = order;
-
-	return pma;
 }
 
 /**
@@ -140,22 +138,19 @@ static struct protected_memory_allocation *small_granularity_alloc(
  * works with complete sets of these 64-page groups. It can therefore be thought of
  * as the 'large-granularity' allocator.
  */
-static struct protected_memory_allocation *large_granularity_alloc(
-	struct simple_pma_device *const epma_dev,
-	size_t start_alloc_bitfield_idx, size_t order)
+static void large_granularity_alloc(struct simple_pma_device *const epma_dev,
+				    size_t start_alloc_bitfield_idx,
+				    size_t order,
+				    struct protected_memory_allocation *pma)
 {
 	size_t i;
-	struct protected_memory_allocation *pma;
 	size_t num_pages_to_alloc = (size_t)1 << order;
 	size_t num_bitfield_elements_needed = num_pages_to_alloc / PAGES_PER_BITFIELD_ELEM;
 	size_t start_page_idx = start_alloc_bitfield_idx * PAGES_PER_BITFIELD_ELEM;
 
-	pma = devm_kzalloc(epma_dev->dev, sizeof(*pma), GFP_KERNEL);
-
-	if (!pma) {
-		dev_err(epma_dev->dev, "Failed to alloc pma struct");
-		return NULL;
-	}
+	if (WARN_ON(!epma_dev) ||
+	    WARN_ON(!pma))
+		return;
 
 	/*
 	 * Are there anough bitfield array elements (groups of 64 pages)
@@ -181,8 +176,6 @@ static struct protected_memory_allocation *large_granularity_alloc(
 	/* Fill-in the allocation struct for the caller */
 	pma->pa = epma_dev->rmem_base + (start_page_idx  << PAGE_SHIFT);
 	pma->order = order;
-
-	return pma;
 }
 
 static struct protected_memory_allocation *simple_pma_alloc_page(
@@ -227,8 +220,18 @@ static struct protected_memory_allocation *simple_pma_alloc_page(
 
 	num_pages_to_alloc = (size_t)1 << order;
 
+	pma = devm_kzalloc(epma_dev->dev, sizeof(*pma), GFP_KERNEL);
+	if (!pma) {
+		dev_err(epma_dev->dev, "Failed to alloc pma struct");
+		return NULL;
+	}
+
+	spin_lock(&epma_dev->rmem_lock);
+
 	if (epma_dev->num_free_pages < num_pages_to_alloc) {
 		dev_err(epma_dev->dev, "not enough free pages\n");
+		devm_kfree(epma_dev->dev, pma);
+		spin_unlock(&epma_dev->rmem_lock);
 		return NULL;
 	}
 
@@ -250,12 +253,16 @@ static struct protected_memory_allocation *simple_pma_alloc_page(
 						 * We've found enough free, consecutive pages with which to
 						 * make an allocation
 						 */
-						pma = small_granularity_alloc(epma_dev, i, bit - count, order);
+						small_granularity_alloc(
+							epma_dev, i,
+							bit - count, order,
+							pma);
 
-						if (pma) {
-							epma_dev->num_free_pages -= num_pages_to_alloc;
-						}
+						epma_dev->num_free_pages -=
+							num_pages_to_alloc;
 
+						spin_unlock(
+							&epma_dev->rmem_lock);
 						return pma;
 					}
 
@@ -290,15 +297,13 @@ static struct protected_memory_allocation *simple_pma_alloc_page(
 				if (count >= (1 << order)) {
 					size_t start_idx = (i + 1) - num_bitfield_elements_needed;
 
-					pma = large_granularity_alloc(
-							epma_dev,
-							start_idx,
-							order);
+					large_granularity_alloc(epma_dev,
+								start_idx,
+								order, pma);
 
-					if (pma) {
-						epma_dev->num_free_pages -= 1 << order;
-						return pma;
-					}
+					epma_dev->num_free_pages -= 1 << order;
+					spin_unlock(&epma_dev->rmem_lock);
+					return pma;
 				}
 			}
 			else
@@ -307,6 +312,9 @@ static struct protected_memory_allocation *simple_pma_alloc_page(
 			}
 		}
 	}
+
+	spin_unlock(&epma_dev->rmem_lock);
+	devm_kfree(epma_dev->dev, pma);
 
 	dev_err(epma_dev->dev, "not enough contiguous pages (need %zu), total free pages left %zu\n",
 		num_pages_to_alloc, epma_dev->num_free_pages);
@@ -369,6 +377,8 @@ static void simple_pma_free_page(
 	/* Is the allocation within expected bounds? */
 	WARN_ON((bitfield_idx + num_bitfield_elems_used_by_alloc) >= alloc_pages_bitmap_size);
 
+	spin_lock(&epma_dev->rmem_lock);
+
 	if (pma->order < ORDER_OF_PAGES_PER_BITFIELD_ELEM) {
 		bitfield = &epma_dev->allocated_pages_bitfield_arr[bitfield_idx];
 
@@ -400,6 +410,7 @@ static void simple_pma_free_page(
 	}
 
 	epma_dev->num_free_pages += num_pages_in_allocation;
+	spin_unlock(&epma_dev->rmem_lock);
 	devm_kfree(epma_dev->dev, pma);
 }
 
@@ -453,6 +464,7 @@ static int protected_memory_allocator_probe(struct platform_device *pdev)
 	epma_dev->rmem_base = rmem_base;
 	epma_dev->rmem_size = rmem_size;
 	epma_dev->num_free_pages = rmem_size;
+	spin_lock_init(&epma_dev->rmem_lock);
 
 	alloc_bitmap_pages_arr_size = ALLOC_PAGES_BITFIELD_ARR_SIZE(epma_dev->rmem_size);
 

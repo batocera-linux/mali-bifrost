@@ -43,9 +43,9 @@
 /* Waiting timeout for global request completion acknowledgment */
 #define GLB_REQ_WAIT_TIMEOUT_MS (300) /* 300 milliseconds */
 
-#define CSG_REQ_EP_CFG (0x1 << CSG_REQ_EP_CFG_SHIFT)
-#define CSG_REQ_SYNC_UPDATE (0x1 << CSG_REQ_SYNC_UPDATE_SHIFT)
 #define FIRMWARE_PING_INTERVAL_MS (2000) /* 2 seconds */
+
+#define FIRMWARE_IDLE_HYSTERESIS_TIME_MS (10) /* Default 10 milliseconds */
 
 /**
  * enum kbase_csf_event_callback_action - return type for CSF event callbacks.
@@ -278,7 +278,9 @@ void kbase_csf_queue_unbind(struct kbase_queue *queue);
 int kbase_csf_queue_kick(struct kbase_context *kctx,
 			 struct kbase_ioctl_cs_queue_kick *kick);
 
-/** Find if given the queue group handle is valid.
+/**
+ * kbase_csf_queue_group_handle_is_valid - Find if the given queue group handle
+ *                                         is valid.
  *
  * This function is used to determine if the queue group handle is valid.
  *
@@ -338,7 +340,6 @@ void kbase_csf_term_descheduled_queue_group(struct kbase_queue_group *group);
  *			suspended.
  * @sus_buf:		Pointer to the structure which contains details of the
  *			user buffer and its kernel pinned pages.
- * @size:		The size in bytes for the user provided buffer.
  * @group_handle:	Handle for the group which uniquely identifies it within
  *			the context within which it was created.
  *
@@ -349,6 +350,16 @@ int kbase_csf_queue_group_suspend(struct kbase_context *kctx,
 	struct kbase_suspend_copy_buffer *sus_buf, u8 group_handle);
 
 /**
+ * kbase_csf_add_fatal_error_to_kctx - Add a fatal error to per-ctx error list.
+ *
+ * @group:       GPU command queue group.
+ * @err_payload: Error payload to report.
+ */
+void kbase_csf_add_fatal_error_to_kctx(
+	struct kbase_queue_group *const group,
+	struct base_gpu_queue_group_error const *const err_payload);
+
+/**
  * kbase_csf_interrupt - Handle interrupts issued by CSF firmware.
  *
  * @kbdev: The kbase device to handle an IRQ for
@@ -357,14 +368,52 @@ int kbase_csf_queue_group_suspend(struct kbase_context *kctx,
 void kbase_csf_interrupt(struct kbase_device *kbdev, u32 val);
 
 /**
- * kbase_csf_doorbell_mapping_init - Initialize the bitmap of Hw doorbell pages
- *                           used to track their availability.
+ * kbase_csf_doorbell_mapping_init - Initialize the fields that facilitates
+ *                                   the update of userspace mapping of HW
+ *                                   doorbell page.
+ *
+ * The function creates a file and allocates a dummy page to facilitate the
+ * update of userspace mapping to point to the dummy page instead of the real
+ * HW doorbell page after the suspend of queue group.
  *
  * @kbdev: Instance of a GPU platform device that implements a CSF interface.
+ *
+ * Return: 0 on success, or negative on failure.
  */
 int kbase_csf_doorbell_mapping_init(struct kbase_device *kbdev);
 
+/**
+ * kbase_csf_doorbell_mapping_term - Free the dummy page & close the file used
+ *                         to update the userspace mapping of HW doorbell page
+ *
+ * @kbdev: Instance of a GPU platform device that implements a CSF interface.
+ */
 void kbase_csf_doorbell_mapping_term(struct kbase_device *kbdev);
+
+/**
+ * kbase_csf_setup_dummy_user_reg_page - Setup the dummy page that is accessed
+ *                                       instead of the User register page after
+ *                                       the GPU power down.
+ *
+ * The function allocates a dummy page which is used to replace the User
+ * register page in the userspace mapping after the power down of GPU.
+ * On the power up of GPU, the mapping is updated to point to the real
+ * User register page. The mapping is used to allow access to LATEST_FLUSH
+ * register from userspace.
+ *
+ * @kbdev: Instance of a GPU platform device that implements a CSF interface.
+ *
+ * Return: 0 on success, or negative on failure.
+ */
+int kbase_csf_setup_dummy_user_reg_page(struct kbase_device *kbdev);
+
+/**
+ * kbase_csf_free_dummy_user_reg_page - Free the dummy page that was used
+ *                                 used to replace the User register page
+ *
+ * @kbdev: Instance of a GPU platform device that implements a CSF interface.
+ */
+void kbase_csf_free_dummy_user_reg_page(struct kbase_device *kbdev);
 
 /**
  * kbase_csf_ring_csg_doorbell - ring the doorbell for a CSG interface.
@@ -372,7 +421,7 @@ void kbase_csf_doorbell_mapping_term(struct kbase_device *kbdev);
  * The function kicks a notification on the CSG interface to firmware.
  *
  * @kbdev: Instance of a GPU platform device that implements a CSF interface.
- * @slot: Index of CSF interface for ringing the door-bell.
+ * @slot: Index of CSG interface for ringing the door-bell.
  */
 void kbase_csf_ring_csg_doorbell(struct kbase_device *kbdev, int slot);
 
@@ -389,16 +438,19 @@ void kbase_csf_ring_csg_slots_doorbell(struct kbase_device *kbdev,
 				       u32 slot_bitmap);
 
 /**
- * kbase_csf_ring_cs_kernel_doorbell - ring the kernel doorbell for a queue
+ * kbase_csf_ring_cs_kernel_doorbell - ring the kernel doorbell for a CSI
+ *                                     assigned to a GPU queue
  *
- * The function kicks a notification to the firmware for the CSG
- * interface to which the queue is bound.
+ * The function sends a doorbell interrupt notification to the firmware for
+ * a CSI assigned to a GPU queue.
  *
  * @kbdev: Instance of a GPU platform device that implements a CSF interface.
- * @queue: Pointer to the queue for ringing the door-bell.
+ * @csi_index: ID of the CSI assigned to the GPU queue.
+ * @csg_nr:    Index of the CSG slot assigned to the queue
+ *             group to which the GPU queue is bound.
  */
 void kbase_csf_ring_cs_kernel_doorbell(struct kbase_device *kbdev,
-			struct kbase_queue *queue);
+				       int csi_index, int csg_nr);
 
 /**
  * kbase_csf_ring_cs_user_doorbell - ring the user doorbell allocated for a

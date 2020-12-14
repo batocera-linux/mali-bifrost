@@ -452,7 +452,7 @@ struct base_kcpu_command {
 /**
  * struct basep_cs_stream_control - CSI capabilities.
  *
- * @features: Features of this CS
+ * @features: Features of this stream
  * @padding:  Padding to a multiple of 64 bits.
  */
 struct basep_cs_stream_control {
@@ -464,7 +464,7 @@ struct basep_cs_stream_control {
  * struct basep_cs_group_control - CSG interface capabilities.
  *
  * @features:     Features of this group
- * @stream_num:   Number of CSs in this group
+ * @stream_num:   Number of streams in this group
  * @suspend_size: Size in bytes of the suspend buffer for this group
  * @padding:      Padding to a multiple of 64 bits.
  */
@@ -561,6 +561,8 @@ struct base_gpu_queue_group_error {
  * @BASE_CSF_NOTIFICATION_EVENT:                 Notification with kernel event
  * @BASE_CSF_NOTIFICATION_GPU_QUEUE_GROUP_ERROR: Notification with GPU fatal
  *                                               error
+ * @BASE_CSF_NOTIFICATION_CPU_QUEUE_DUMP:        Notification with dumping cpu
+ *                                               queue
  * @BASE_CSF_NOTIFICATION_COUNT:                 The number of notification type
  *
  * This type is used for &struct_base_csf_notification.type.
@@ -568,6 +570,7 @@ struct base_gpu_queue_group_error {
 enum base_csf_notification_type {
 	BASE_CSF_NOTIFICATION_EVENT = 0,
 	BASE_CSF_NOTIFICATION_GPU_QUEUE_GROUP_ERROR,
+	BASE_CSF_NOTIFICATION_CPU_QUEUE_DUMP,
 	BASE_CSF_NOTIFICATION_COUNT
 };
 
@@ -591,6 +594,7 @@ struct base_csf_notification {
 			u8 padding[7];
 			struct base_gpu_queue_group_error error;
 		} csg_error;
+
 		u8 align[56];
 	} payload;
 };

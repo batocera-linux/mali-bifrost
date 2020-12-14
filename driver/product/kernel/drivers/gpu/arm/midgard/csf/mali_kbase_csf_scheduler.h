@@ -389,4 +389,20 @@ void kbase_csf_scheduler_pm_resume(struct kbase_device *kbdev);
  */
 void kbase_csf_scheduler_pm_suspend(struct kbase_device *kbdev);
 
+/**
+ * kbase_csf_scheduler_all_csgs_idle() - Check if the scheduler internal
+ * runtime used slots are all tagged as idle command queue groups.
+ *
+ * @kbdev: Pointer to the device
+ *
+ * Return: true if all the used slots are tagged as idle CSGs.
+ */
+static inline bool kbase_csf_scheduler_all_csgs_idle(struct kbase_device *kbdev)
+{
+	lockdep_assert_held(&kbdev->csf.scheduler.interrupt_lock);
+	return bitmap_equal(kbdev->csf.scheduler.csg_slots_idle_mask,
+			    kbdev->csf.scheduler.csg_inuse_bitmap,
+			    kbdev->csf.global_iface.group_num);
+}
+
 #endif /* _KBASE_CSF_SCHEDULER_H_ */

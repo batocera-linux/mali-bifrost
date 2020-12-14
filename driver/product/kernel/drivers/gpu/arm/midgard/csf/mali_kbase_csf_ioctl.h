@@ -46,8 +46,6 @@ struct kbase_ioctl_version_check {
 	__u16 minor;
 };
 
-#define KBASE_IOCTL_VERSION_CHECK \
-	_IOWR(KBASE_IOCTL_TYPE, 52, struct kbase_ioctl_version_check)
 
 #define KBASE_IOCTL_VERSION_CHECK_RESERVED \
 	_IOWR(KBASE_IOCTL_TYPE, 0, struct kbase_ioctl_version_check)
@@ -297,10 +295,7 @@ struct kbase_ioctl_cs_tiler_heap_term {
  *                        which case streams_ptr is unused.
  * @groups_ptr:       Pointer where to store all the group data (sequentially).
  * @streams_ptr:      Pointer where to store all the CS data (sequentially).
- * @glb_version:      Global interface version. Bits 31:16 hold the major
- *                    version number and 15:0 hold the minor version number.
- *                    A higher minor version is backwards-compatible with a
- *                    lower minor version for the same major version.
+ * @glb_version:      Global interface version.
  * @features:         Bit mask of features (e.g. whether certain types of job
  *                    can be suspended).
  * @group_num:        Number of CSGs supported.
@@ -334,6 +329,18 @@ union kbase_ioctl_cs_get_glb_iface {
 
 #define KBASE_IOCTL_CS_GET_GLB_IFACE \
 	_IOWR(KBASE_IOCTL_TYPE, 51, union kbase_ioctl_cs_get_glb_iface)
+
+struct kbase_ioctl_cs_cpu_queue_info {
+	__u64 buffer;
+	__u64 size;
+};
+
+#define KBASE_IOCTL_VERSION_CHECK \
+	_IOWR(KBASE_IOCTL_TYPE, 52, struct kbase_ioctl_version_check)
+
+#define KBASE_IOCTL_CS_CPU_QUEUE_DUMP \
+	_IOW(KBASE_IOCTL_TYPE, 53, struct kbase_ioctl_cs_cpu_queue_info)
+
 
 /***************
  * test ioctls *

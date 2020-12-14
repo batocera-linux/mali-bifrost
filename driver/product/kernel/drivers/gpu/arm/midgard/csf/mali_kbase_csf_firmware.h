@@ -500,9 +500,11 @@ void kbase_csf_firmware_reload_completed(struct kbase_device *kbdev);
  * kbase_csf_firmware_global_reinit - Send the Global configuration requests
  *                                    after the reboot of MCU firmware.
  *
- * @kbdev: Instance of a GPU platform device that implements a CSF interface
+ * @kbdev: Instance of a GPU platform device that implements a CSF interface.
+ * @core_mask: Mask of the enabled shader cores.
  */
-void kbase_csf_firmware_global_reinit(struct kbase_device *kbdev);
+void kbase_csf_firmware_global_reinit(struct kbase_device *kbdev,
+				      u64 core_mask);
 
 /**
  * kbase_csf_firmware_global_reinit_complete - Check the Global configuration
@@ -514,6 +516,28 @@ void kbase_csf_firmware_global_reinit(struct kbase_device *kbdev);
  * @kbdev: Instance of a GPU platform device that implements a CSF interface.
  */
 bool kbase_csf_firmware_global_reinit_complete(struct kbase_device *kbdev);
+
+/**
+ * kbase_csf_firmware_update_core_mask - Send the Global configuration request
+ *                                  to update the mask of enabled shader cores.
+ *
+ * @kbdev: Instance of a GPU platform device that implements a CSF interface.
+ * @new_core_mask: New mask of the enabled cores.
+ */
+void kbase_csf_firmware_update_core_mask(struct kbase_device *kbdev,
+					 u64 new_core_mask);
+
+/**
+ * kbase_csf_firmware_core_mask_updated - Check the Global configuration
+ *                  request has completed or not, that was sent to update
+ *                  to update the mask of enabled shader cores.
+ *
+ * Return: true if the Global configuration request to update the mask of
+ *         enabled shader cores has completed, otherwise false.
+ *
+ * @kbdev: Instance of a GPU platform device that implements a CSF interface.
+ */
+bool kbase_csf_firmware_core_mask_updated(struct kbase_device *kbdev);
 
 /**
  * Request the global control block of CSF interface capabilities
@@ -530,14 +554,10 @@ bool kbase_csf_firmware_global_reinit_complete(struct kbase_device *kbdev);
  * @max_total_stream_num:  The maximum number of CSs to be read.
  *                         Can be 0, in which case stream_data is unused.
  * @glb_version:           Where to store the global interface version.
- *                         Bits 31:16 hold the major version number and
- *                         15:0 hold the minor version number.
- *                         A higher minor version is backwards-compatible
- *                         with a lower minor version for the same major
- *                         version.
  * @features:              Where to store a bit mask of features (e.g.
  *                         whether certain types of job can be suspended).
- * @group_num:             Where to store the number of CSGs supported.
+ * @group_num:             Where to store the number of CSGs
+ *                         supported.
  * @prfcnt_size:           Where to store the size of CSF performance counters,
  *                         in bytes. Bits 31:16 hold the size of firmware
  *                         performance counter data and 15:0 hold the size of
@@ -639,5 +659,58 @@ static inline long kbase_csf_timeout_in_jiffies(const unsigned int msecs)
 	return msecs_to_jiffies(msecs);
 #endif
 }
+
+/**
+ * kbase_csf_firmware_enable_gpu_idle_timer() - Activate the idle hysteresis
+ *                                              monitoring operation
+ *
+ * Program the firmware interface with its configured hysteresis count value
+ * and enable the firmware to act on it. The Caller is
+ * assumed to hold the kbdev->csf.scheduler.interrupt_lock.
+ *
+ * @kbdev: Kbase device structure
+ */
+void kbase_csf_firmware_enable_gpu_idle_timer(struct kbase_device *kbdev);
+
+/**
+ * kbase_csf_firmware_disable_gpu_idle_timer() - Disable the idle time
+ *                                             hysteresis monitoring operation
+ *
+ * Program the firmware interface to disable the idle hysteresis timer. The
+ * Caller is assumed to hold the kbdev->csf.scheduler.interrupt_lock.
+ *
+ * @kbdev: Kbase device structure
+ */
+void kbase_csf_firmware_disable_gpu_idle_timer(struct kbase_device *kbdev);
+
+/**
+ * kbase_csf_firmware_get_gpu_idle_hysteresis_time - Get the firmware GPU idle
+ *                                               detection hysteresis duration
+ *
+ * @kbdev: Instance of a GPU platform device that implements a CSF interface.
+ *
+ * Return: the internally recorded hysteresis (nominal) value.
+ */
+u32 kbase_csf_firmware_get_gpu_idle_hysteresis_time(struct kbase_device *kbdev);
+
+/**
+ * kbase_csf_firmware_set_gpu_idle_hysteresis_time - Set the firmware GPU idle
+ *                                               detection hysteresis duration
+ *
+ * @kbdev: Instance of a GPU platform device that implements a CSF interface.
+ * @dur:     The duration value (unit: milliseconds) for the configuring
+ *           hysteresis field for GPU idle detection
+ *
+ * The supplied value will be recorded internally without any change. But the
+ * actual field value will be subject to hysteresis source frequency scaling
+ * and maximum value limiting. The default source will be SYSTEM_TIMESTAMP
+ * counter. But in case the platform is not able to supply it, the GPU
+ * CYCLE_COUNTER source will be used as an alternative. Bit-31 on the
+ * returned value is the source configuration flag, and it is set to '1'
+ * when CYCLE_COUNTER alternative source is used.
+ *
+ * Return: the actual internally configured hysteresis field value.
+ */
+u32 kbase_csf_firmware_set_gpu_idle_hysteresis_time(struct kbase_device *kbdev, u32 dur);
 
 #endif

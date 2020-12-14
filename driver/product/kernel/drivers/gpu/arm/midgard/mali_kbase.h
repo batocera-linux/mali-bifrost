@@ -155,9 +155,9 @@ void kbase_release_device(struct kbase_device *kbdev);
  * the flag @ref KBASE_REG_TILER_ALIGN_TOP (check the flags of the kbase
  * region):
  * - alignment offset is set to the difference between the kbase region
- * extent (converted from the original value in pages to bytes) and the kbase
+ * extension (converted from the original value in pages to bytes) and the kbase
  * region initial_commit (also converted from the original value in pages to
- * bytes); alignment mask is set to the kbase region extent in bytes and
+ * bytes); alignment mask is set to the kbase region extension in bytes and
  * decremented by 1.
  *
  * Return: if successful, address of the unmapped area aligned as required;

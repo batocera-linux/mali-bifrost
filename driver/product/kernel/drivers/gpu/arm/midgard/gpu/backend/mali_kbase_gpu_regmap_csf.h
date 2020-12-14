@@ -27,6 +27,42 @@
 #error "Cannot be compiled with JM"
 #endif
 
+/* IPA control registers */
+
+#define IPA_CONTROL_BASE       0x40000
+#define IPA_CONTROL_REG(r)     (IPA_CONTROL_BASE+(r))
+#define COMMAND                0x000 /* (WO) Command register */
+#define STATUS                 0x004 /* (RO) Status register */
+#define TIMER                  0x008 /* (RW) Timer control register */
+
+#define SELECT_CSHW_LO         0x010 /* (RW) Counter select for CS hardware, low word */
+#define SELECT_CSHW_HI         0x014 /* (RW) Counter select for CS hardware, high word */
+#define SELECT_MEMSYS_LO       0x018 /* (RW) Counter select for Memory system, low word */
+#define SELECT_MEMSYS_HI       0x01C /* (RW) Counter select for Memory system, high word */
+#define SELECT_TILER_LO        0x020 /* (RW) Counter select for Tiler cores, low word */
+#define SELECT_TILER_HI        0x024 /* (RW) Counter select for Tiler cores, high word */
+#define SELECT_SHADER_LO       0x028 /* (RW) Counter select for Shader cores, low word */
+#define SELECT_SHADER_HI       0x02C /* (RW) Counter select for Shader cores, high word */
+
+/* Accumulated counter values for CS hardware */
+#define VALUE_CSHW_BASE        0x100
+#define VALUE_CSHW_REG_LO(n)   (VALUE_CSHW_BASE + ((n) << 3))       /* (RO) Counter value #n, low word */
+#define VALUE_CSHW_REG_HI(n)   (VALUE_CSHW_BASE + ((n) << 3) + 4)   /* (RO) Counter value #n, high word */
+
+/* Accumulated counter values for memory system */
+#define VALUE_MEMSYS_BASE      0x140
+#define VALUE_MEMSYS_REG_LO(n) (VALUE_MEMSYS_BASE + ((n) << 3))     /* (RO) Counter value #n, low word */
+#define VALUE_MEMSYS_REG_HI(n) (VALUE_MEMSYS_BASE + ((n) << 3) + 4) /* (RO) Counter value #n, high word */
+
+#define VALUE_TILER_BASE       0x180
+#define VALUE_TILER_REG_LO(n)  (VALUE_TILER_BASE + ((n) << 3))      /* (RO) Counter value #n, low word */
+#define VALUE_TILER_REG_HI(n)  (VALUE_TILER_BASE + ((n) << 3) + 4)  /* (RO) Counter value #n, high word */
+
+#define VALUE_SHADER_BASE      0x1C0
+#define VALUE_SHADER_REG_LO(n) (VALUE_SHADER_BASE + ((n) << 3))     /* (RO) Counter value #n, low word */
+#define VALUE_SHADER_REG_HI(n) (VALUE_SHADER_BASE + ((n) << 3) + 4) /* (RO) Counter value #n, high word */
+
+
 #include "csf/mali_gpu_csf_control_registers.h"
 #define GPU_CONTROL_MCU_REG(r)  (GPU_CONTROL_MCU + (r))
 

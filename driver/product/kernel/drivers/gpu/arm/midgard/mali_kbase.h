@@ -25,6 +25,11 @@
 #ifndef _KBASE_H_
 #define _KBASE_H_
 
+// batocera hack begin
+#define CONFIG_DEVFREQ_THERMAL 1
+#define CONFIG_MALI_DEVFREQ 1
+// batocera hack end
+
 #include <mali_malisw.h>
 
 #include <mali_kbase_debug.h>

@@ -43,6 +43,9 @@
 #endif
 #include <linux/slab.h>
 #include <linux/spinlock.h>
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 9, 2))
+#include <linux/pfn.h>
+#endif
 #include <linux/vmalloc.h>
 #include <linux/wait.h>
 #include <linux/workqueue.h>

@@ -1,6 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  *
- * (C) COPYRIGHT 2012-2016, 2018 ARM Limited. All rights reserved.
+ * (C) COPYRIGHT 2012-2016, 2018, 2020 ARM Limited. All rights reserved.
  *
  * This program is free software and is provided to you under the terms of the
  * GNU General Public License version 2 as published by the Free Software
@@ -19,7 +20,6 @@
  * SPDX-License-Identifier: GPL-2.0
  *
  */
-
 
 #include <mali_kbase.h>
 #include <mali_kbase_config.h>
@@ -67,7 +67,7 @@ static bool kbasep_js_ctx_attr_runpool_retain_attr(struct kbase_device *kbdev, s
 		if (js_devdata->runpool_irq.ctx_attr_ref_count[attribute] == 1) {
 			/* First refcount indicates a state change */
 			runpool_state_changed = true;
-			KBASE_TRACE_ADD(kbdev, JS_CTX_ATTR_NOW_ON_RUNPOOL, kctx, NULL, 0u, attribute);
+			KBASE_KTRACE_ADD_JM(kbdev, JS_CTX_ATTR_NOW_ON_RUNPOOL, kctx, NULL, 0u, attribute);
 		}
 	}
 
@@ -112,7 +112,7 @@ static bool kbasep_js_ctx_attr_runpool_release_attr(struct kbase_device *kbdev, 
 		if (js_devdata->runpool_irq.ctx_attr_ref_count[attribute] == 0) {
 			/* Last de-refcount indicates a state change */
 			runpool_state_changed = true;
-			KBASE_TRACE_ADD(kbdev, JS_CTX_ATTR_NOW_OFF_RUNPOOL, kctx, NULL, 0u, attribute);
+			KBASE_KTRACE_ADD_JM(kbdev, JS_CTX_ATTR_NOW_OFF_RUNPOOL, kctx, NULL, 0u, attribute);
 		}
 	}
 
@@ -149,7 +149,7 @@ static bool kbasep_js_ctx_attr_ctx_retain_attr(struct kbase_device *kbdev, struc
 
 	if (kbase_ctx_flag(kctx, KCTX_SCHEDULED) && js_kctx_info->ctx.ctx_attr_ref_count[attribute] == 1) {
 		/* Only ref-count the attribute on the runpool for the first time this contexts sees this attribute */
-		KBASE_TRACE_ADD(kbdev, JS_CTX_ATTR_NOW_ON_CTX, kctx, NULL, 0u, attribute);
+		KBASE_KTRACE_ADD_JM(kbdev, JS_CTX_ATTR_NOW_ON_CTX, kctx, NULL, 0u, attribute);
 		runpool_state_changed = kbasep_js_ctx_attr_runpool_retain_attr(kbdev, kctx, attribute);
 	}
 
@@ -185,7 +185,7 @@ static bool kbasep_js_ctx_attr_ctx_release_attr(struct kbase_device *kbdev, stru
 		lockdep_assert_held(&kbdev->hwaccess_lock);
 		/* Only de-ref-count the attribute on the runpool when this is the last ctx-reference to it */
 		runpool_state_changed = kbasep_js_ctx_attr_runpool_release_attr(kbdev, kctx, attribute);
-		KBASE_TRACE_ADD(kbdev, JS_CTX_ATTR_NOW_OFF_CTX, kctx, NULL, 0u, attribute);
+		KBASE_KTRACE_ADD_JM(kbdev, JS_CTX_ATTR_NOW_OFF_CTX, kctx, NULL, 0u, attribute);
 	}
 
 	/* De-ref must happen afterwards, because kbasep_js_ctx_attr_runpool_release() needs to check it too */
@@ -211,7 +211,8 @@ void kbasep_js_ctx_attr_runpool_retain_ctx(struct kbase_device *kbdev, struct kb
 
 			/* We don't need to know about state changed, because retaining a
 			 * context occurs on scheduling it, and that itself will also try
-			 * to run new atoms */
+			 * to run new atoms
+			 */
 			CSTD_UNUSED(runpool_state_changed);
 		}
 	}
@@ -251,9 +252,9 @@ void kbasep_js_ctx_attr_ctx_retain_atom(struct kbase_device *kbdev, struct kbase
 		runpool_state_changed |= kbasep_js_ctx_attr_ctx_retain_attr(kbdev, kctx, KBASEP_JS_CTX_ATTR_COMPUTE_ALL_CORES);
 	}
 
-	/* We don't need to know about state changed, because retaining an
-	 * atom occurs on adding it, and that itself will also try to run
-	 * new atoms */
+	/* We don't need to know about state changed, because retaining an atom
+	 * occurs on adding it, and that itself will also try to run new atoms
+	 */
 	CSTD_UNUSED(runpool_state_changed);
 }
 

@@ -1,6 +1,6 @@
 /*
  *
- * (C) COPYRIGHT 2010-2020 ARM Limited. All rights reserved.
+ * (C) COPYRIGHT ARM Limited. All rights reserved.
  *
  * This program is free software and is provided to you under the terms of the
  * GNU General Public License version 2 as published by the Free Software
@@ -18,9 +18,26 @@
  *
  * SPDX-License-Identifier: GPL-2.0
  *
+ *//* SPDX-License-Identifier: GPL-2.0 */
+/*
+ *
+ * (C) COPYRIGHT 2010-2020 ARM Limited. All rights reserved.
+ *
+ * This program is free software and is provided to you under the terms of the
+ * GNU General Public License version 2 as published by the Free Software
+ * Foundation, and any use by you of this program is subject to the terms
+ * of such GNU license.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, you can access it online at
+ * http://www.gnu.org/licenses/gpl-2.0.html.
+ *
  */
-
-
 
 /*
  * Base structures shared with the kernel.
@@ -147,15 +164,15 @@ struct base_mem_import_user_buffer {
 /* Mask to detect 4GB boundary (in page units) alignment */
 #define BASE_MEM_PFN_MASK_4GB  (BASE_MEM_MASK_4GB >> LOCAL_PAGE_SHIFT)
 
-/* Limit on the 'extent' parameter for an allocation with the
+/* Limit on the 'extension' parameter for an allocation with the
  * BASE_MEM_TILER_ALIGN_TOP flag set
  *
  * This is the same as the maximum limit for a Buffer Descriptor's chunk size
  */
-#define BASE_MEM_TILER_ALIGN_TOP_EXTENT_MAX_PAGES_LOG2 \
-		(21u - (LOCAL_PAGE_SHIFT))
-#define BASE_MEM_TILER_ALIGN_TOP_EXTENT_MAX_PAGES \
-		(1ull << (BASE_MEM_TILER_ALIGN_TOP_EXTENT_MAX_PAGES_LOG2))
+#define BASE_MEM_TILER_ALIGN_TOP_EXTENSION_MAX_PAGES_LOG2                      \
+	(21u - (LOCAL_PAGE_SHIFT))
+#define BASE_MEM_TILER_ALIGN_TOP_EXTENSION_MAX_PAGES                           \
+	(1ull << (BASE_MEM_TILER_ALIGN_TOP_EXTENSION_MAX_PAGES_LOG2))
 
 /* Bit mask of cookies used for for memory allocation setup */
 #define KBASE_COOKIE_MASK  ~1UL /* bit 0 is reserved */
@@ -213,28 +230,6 @@ struct base_mem_aliasing_info {
  */
 #define BASE_JIT_ALLOC_COUNT (255)
 
-/* Similar to BASE_MEM_TILER_ALIGN_TOP, memory starting from the end of the
- * initial commit is aligned to 'extent' pages, where 'extent' must be a power
- * of 2 and no more than BASE_MEM_TILER_ALIGN_TOP_EXTENT_MAX_PAGES
- */
-#define BASE_JIT_ALLOC_MEM_TILER_ALIGN_TOP  (1 << 0)
-
-/**
- * If set, the heap info address points to a u32 holding the used size in bytes;
- * otherwise it points to a u64 holding the lowest address of unused memory.
- */
-#define BASE_JIT_ALLOC_HEAP_INFO_IS_SIZE  (1 << 1)
-
-/**
- * Valid set of just-in-time memory allocation flags
- *
- * Note: BASE_JIT_ALLOC_HEAP_INFO_IS_SIZE cannot be set if heap_info_gpu_addr
- * in %base_jit_alloc_info is 0 (atom with BASE_JIT_ALLOC_HEAP_INFO_IS_SIZE set
- * and heap_info_gpu_addr being 0 will be rejected).
- */
-#define BASE_JIT_ALLOC_VALID_FLAGS \
-	(BASE_JIT_ALLOC_MEM_TILER_ALIGN_TOP | BASE_JIT_ALLOC_HEAP_INFO_IS_SIZE)
-
 /* base_jit_alloc_info in use for kernel driver versions 10.2 to early 11.5
  *
  * jit_version is 1
@@ -248,7 +243,7 @@ struct base_jit_alloc_info_10_2 {
 	u64 gpu_alloc_addr;
 	u64 va_pages;
 	u64 commit_pages;
-	u64 extent;
+	u64 extension;
 	u8 id;
 };
 
@@ -275,7 +270,7 @@ struct base_jit_alloc_info_11_5 {
 	u64 gpu_alloc_addr;
 	u64 va_pages;
 	u64 commit_pages;
-	u64 extent;
+	u64 extension;
 	u8 id;
 	u8 bin_id;
 	u8 max_allocations;
@@ -292,7 +287,7 @@ struct base_jit_alloc_info_11_5 {
  * @va_pages:                   The minimum number of virtual pages required.
  * @commit_pages:               The minimum number of physical pages which
  *                              should back the allocation.
- * @extent:                     Granularity of physical pages to grow the
+ * @extension:                     Granularity of physical pages to grow the
  *                              allocation by during a fault.
  * @id:                         Unique ID provided by the caller, this is used
  *                              to pair allocation and free requests.
@@ -330,7 +325,7 @@ struct base_jit_alloc_info {
 	u64 gpu_alloc_addr;
 	u64 va_pages;
 	u64 commit_pages;
-	u64 extent;
+	u64 extension;
 	u8 id;
 	u8 bin_id;
 	u8 max_allocations;
@@ -668,7 +663,6 @@ struct gpu_raw_gpu_props {
 	u64 tiler_present;
 	u64 l2_present;
 	u64 stack_present;
-
 	u32 l2_features;
 	u32 core_features;
 	u32 mem_features;
@@ -695,6 +689,7 @@ struct gpu_raw_gpu_props {
 	u32 coherency_mode;
 
 	u32 thread_tls_alloc;
+	u64 gpu_features;
 };
 
 /**
@@ -719,7 +714,11 @@ struct base_gpu_props {
 	struct mali_base_gpu_coherent_group_info coherency_info;
 };
 
+#if MALI_USE_CSF
+#include "csf/mali_base_csf_kernel.h"
+#else
 #include "jm/mali_base_jm_kernel.h"
+#endif
 
 /**
  * base_mem_group_id_get() - Get group ID from flags
@@ -751,8 +750,10 @@ static inline int base_mem_group_id_get(base_mem_alloc_flags flags)
  */
 static inline base_mem_alloc_flags base_mem_group_id_set(int id)
 {
-	LOCAL_ASSERT(id >= 0);
-	LOCAL_ASSERT(id < BASE_MEM_GROUP_COUNT);
+	if ((id < 0) || (id >= BASE_MEM_GROUP_COUNT)) {
+		/* Set to default value when id is out of range. */
+		id = BASE_MEM_GROUP_DEFAULT;
+	}
 
 	return ((base_mem_alloc_flags)id << BASEP_MEM_GROUP_ID_SHIFT) &
 		BASE_MEM_GROUP_ID_MASK;

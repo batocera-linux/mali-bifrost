@@ -1,6 +1,6 @@
 /*
  *
- * (C) COPYRIGHT 2017-2020 ARM Limited. All rights reserved.
+ * (C) COPYRIGHT ARM Limited. All rights reserved.
  *
  * This program is free software and is provided to you under the terms of the
  * GNU General Public License version 2 as published by the Free Software
@@ -18,6 +18,25 @@
  *
  * SPDX-License-Identifier: GPL-2.0
  *
+ *//* SPDX-License-Identifier: GPL-2.0 */
+/*
+ *
+ * (C) COPYRIGHT 2017-2020 ARM Limited. All rights reserved.
+ *
+ * This program is free software and is provided to you under the terms of the
+ * GNU General Public License version 2 as published by the Free Software
+ * Foundation, and any use by you of this program is subject to the terms
+ * of such GNU license.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, you can access it online at
+ * http://www.gnu.org/licenses/gpl-2.0.html.
+ *
  */
 
 #ifndef _KBASE_IOCTL_H_
@@ -30,23 +49,13 @@ extern "C" {
 #include <asm-generic/ioctl.h>
 #include <linux/types.h>
 
+#if MALI_USE_CSF
+#include "csf/mali_kbase_csf_ioctl.h"
+#else
 #include "jm/mali_kbase_jm_ioctl.h"
+#endif /* MALI_USE_CSF */
 
 #define KBASE_IOCTL_TYPE 0x80
-
-/**
- * struct kbase_ioctl_version_check - Check version compatibility with kernel
- *
- * @major: Major version number
- * @minor: Minor version number
- */
-struct kbase_ioctl_version_check {
-	__u16 major;
-	__u16 minor;
-};
-
-#define KBASE_IOCTL_VERSION_CHECK \
-	_IOWR(KBASE_IOCTL_TYPE, 0, struct kbase_ioctl_version_check)
 
 /**
  * struct kbase_ioctl_set_flags - Set kernel context creation flags
@@ -100,7 +109,7 @@ struct kbase_ioctl_get_gpuprops {
  *
  * @va_pages: The number of pages of virtual address space to reserve
  * @commit_pages: The number of physical pages to allocate
- * @extent: The number of extra pages to allocate on each GPU fault which grows
+ * @extension: The number of extra pages to allocate on each GPU fault which grows
  *          the region
  * @flags: Flags
  * @gpu_va: The GPU virtual address which is allocated
@@ -112,7 +121,7 @@ union kbase_ioctl_mem_alloc {
 	struct {
 		__u64 va_pages;
 		__u64 commit_pages;
-		__u64 extent;
+		__u64 extension;
 		__u64 flags;
 	} in;
 	struct {
@@ -166,7 +175,7 @@ struct kbase_ioctl_mem_free {
 /**
  * struct kbase_ioctl_hwcnt_reader_setup - Setup HWC dumper/reader
  * @buffer_count: requested number of dumping buffers
- * @jm_bm:        counters selection bitmask (JM)
+ * @fe_bm:        counters selection bitmask (Front end)
  * @shader_bm:    counters selection bitmask (Shader)
  * @tiler_bm:     counters selection bitmask (Tiler)
  * @mmu_l2_bm:    counters selection bitmask (MMU_L2)
@@ -175,7 +184,7 @@ struct kbase_ioctl_mem_free {
  */
 struct kbase_ioctl_hwcnt_reader_setup {
 	__u32 buffer_count;
-	__u32 jm_bm;
+	__u32 fe_bm;
 	__u32 shader_bm;
 	__u32 tiler_bm;
 	__u32 mmu_l2_bm;
@@ -187,14 +196,14 @@ struct kbase_ioctl_hwcnt_reader_setup {
 /**
  * struct kbase_ioctl_hwcnt_enable - Enable hardware counter collection
  * @dump_buffer:  GPU address to write counters to
- * @jm_bm:        counters selection bitmask (JM)
+ * @fe_bm:        counters selection bitmask (Front end)
  * @shader_bm:    counters selection bitmask (Shader)
  * @tiler_bm:     counters selection bitmask (Tiler)
  * @mmu_l2_bm:    counters selection bitmask (MMU_L2)
  */
 struct kbase_ioctl_hwcnt_enable {
 	__u64 dump_buffer;
-	__u32 jm_bm;
+	__u32 fe_bm;
 	__u32 shader_bm;
 	__u32 tiler_bm;
 	__u32 mmu_l2_bm;
@@ -682,6 +691,18 @@ union kbase_ioctl_get_cpu_gpu_timeinfo {
 #define KBASE_IOCTL_GET_CPU_GPU_TIMEINFO \
 	_IOWR(KBASE_IOCTL_TYPE, 50, union kbase_ioctl_get_cpu_gpu_timeinfo)
 
+/**
+ * struct kbase_ioctl_context_priority_check - Check the max possible priority
+ * @priority: Input priority & output priority
+ */
+
+struct kbase_ioctl_context_priority_check {
+	__u8 priority;
+};
+
+#define KBASE_IOCTL_CONTEXT_PRIORITY_CHECK \
+	_IOWR(KBASE_IOCTL_TYPE, 54, struct kbase_ioctl_context_priority_check)
+
 /***************
  * test ioctls *
  ***************/
@@ -836,11 +857,11 @@ struct kbase_ioctl_tlstream_stats {
 #define KBASE_GPUPROP_TEXTURE_FEATURES_3		80
 #define KBASE_GPUPROP_RAW_TEXTURE_FEATURES_3		81
 
-#define KBASE_GPUPROP_NUM_EXEC_ENGINES                  82
+#define KBASE_GPUPROP_NUM_EXEC_ENGINES			82
 
 #define KBASE_GPUPROP_RAW_THREAD_TLS_ALLOC		83
 #define KBASE_GPUPROP_TLS_ALLOC				84
-
+#define KBASE_GPUPROP_RAW_GPU_FEATURES			85
 #ifdef __cpluscplus
 }
 #endif

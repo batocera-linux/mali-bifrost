@@ -1,6 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  *
- * (C) COPYRIGHT 2014-2019 ARM Limited. All rights reserved.
+ * (C) COPYRIGHT 2014-2020 ARM Limited. All rights reserved.
  *
  * This program is free software and is provided to you under the terms of the
  * GNU General Public License version 2 as published by the Free Software
@@ -19,7 +20,6 @@
  * SPDX-License-Identifier: GPL-2.0
  *
  */
-
 
 /*
  * Register backend context / address space management
@@ -58,8 +58,10 @@ static void assign_and_activate_kctx_addr_space(struct kbase_device *kbdev,
 	lockdep_assert_held(&js_devdata->runpool_mutex);
 	lockdep_assert_held(&kbdev->hwaccess_lock);
 
+#if !MALI_USE_CSF
 	/* Attribute handling */
 	kbasep_js_ctx_attr_runpool_retain_ctx(kbdev, kctx);
+#endif
 
 	/* Allow it to run jobs */
 	kbasep_js_set_submit_allowed(js_devdata, kctx);
@@ -148,8 +150,7 @@ int kbase_backend_find_and_release_free_address_space(
 		 */
 		if (as_kctx && !kbase_ctx_flag(as_kctx, KCTX_PRIVILEGED) &&
 			atomic_read(&as_kctx->refcount) == 1) {
-			if (!kbasep_js_runpool_retain_ctx_nolock(kbdev,
-								as_kctx)) {
+			if (!kbase_ctx_sched_inc_refcount_nolock(as_kctx)) {
 				WARN(1, "Failed to retain active context\n");
 
 				spin_unlock_irqrestore(&kbdev->hwaccess_lock,
@@ -189,8 +190,8 @@ int kbase_backend_find_and_release_free_address_space(
 			}
 
 			/* Context was retained while locks were dropped,
-			 * continue looking for free AS */
-
+			 * continue looking for free AS
+			 */
 			mutex_unlock(&js_devdata->runpool_mutex);
 			mutex_unlock(&as_js_kctx_info->ctx.jsctx_mutex);
 
@@ -236,7 +237,7 @@ bool kbase_backend_use_ctx(struct kbase_device *kbdev,
 	if (kbase_ctx_flag(kctx, KCTX_PRIVILEGED)) {
 		/* We need to retain it to keep the corresponding address space
 		 */
-		kbasep_js_runpool_retain_ctx_nolock(kbdev, kctx);
+		kbase_ctx_sched_retain_ctx_refcount(kctx);
 	}
 
 	return true;

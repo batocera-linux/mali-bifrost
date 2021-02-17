@@ -1,6 +1,6 @@
 /*
  *
- * (C) COPYRIGHT 2013-2020 ARM Limited. All rights reserved.
+ * (C) COPYRIGHT ARM Limited. All rights reserved.
  *
  * This program is free software and is provided to you under the terms of the
  * GNU General Public License version 2 as published by the Free Software
@@ -17,6 +17,25 @@
  * http://www.gnu.org/licenses/gpl-2.0.html.
  *
  * SPDX-License-Identifier: GPL-2.0
+ *
+ *//* SPDX-License-Identifier: GPL-2.0 */
+/*
+ *
+ * (C) COPYRIGHT 2013-2020 ARM Limited. All rights reserved.
+ *
+ * This program is free software and is provided to you under the terms of the
+ * GNU General Public License version 2 as published by the Free Software
+ * Foundation, and any use by you of this program is subject to the terms
+ * of such GNU license.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, you can access it online at
+ * http://www.gnu.org/licenses/gpl-2.0.html.
  *
  */
 
@@ -88,29 +107,38 @@ enum {
 };
 
 /**
- * Default period for DVFS sampling
+ * Default period for DVFS sampling (can be overridden by platform header)
  */
+#ifndef DEFAULT_PM_DVFS_PERIOD
 #define DEFAULT_PM_DVFS_PERIOD 100 /* 100ms */
+#endif
 
 /**
  * Power Management poweroff tick granuality. This is in nanoseconds to
- * allow HR timer support.
+ * allow HR timer support (can be overridden by platform header).
  *
  * On each scheduling tick, the power manager core may decide to:
  * -# Power off one or more shader cores
  * -# Power off the entire GPU
  */
+#ifndef DEFAULT_PM_GPU_POWEROFF_TICK_NS
 #define DEFAULT_PM_GPU_POWEROFF_TICK_NS (400000) /* 400us */
+#endif
 
 /**
  * Power Manager number of ticks before shader cores are powered off
+ * (can be overridden by platform header).
  */
+#ifndef DEFAULT_PM_POWEROFF_TICK_SHADER
 #define DEFAULT_PM_POWEROFF_TICK_SHADER (2) /* 400-800us */
+#endif
 
 /**
- * Default scheduling tick granuality
+ * Default scheduling tick granuality (can be overridden by platform header)
  */
+#ifndef DEFAULT_JS_SCHEDULING_PERIOD_NS
 #define DEFAULT_JS_SCHEDULING_PERIOD_NS    (100000000u) /* 100ms */
+#endif
 
 /**
  * Default minimum number of scheduling ticks before jobs are soft-stopped.

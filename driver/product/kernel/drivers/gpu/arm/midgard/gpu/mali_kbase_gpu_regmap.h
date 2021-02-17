@@ -1,6 +1,6 @@
 /*
  *
- * (C) COPYRIGHT 2010-2019 ARM Limited. All rights reserved.
+ * (C) COPYRIGHT ARM Limited. All rights reserved.
  *
  * This program is free software and is provided to you under the terms of the
  * GNU General Public License version 2 as published by the Free Software
@@ -18,6 +18,25 @@
  *
  * SPDX-License-Identifier: GPL-2.0
  *
+ *//* SPDX-License-Identifier: GPL-2.0 */
+/*
+ *
+ * (C) COPYRIGHT 2010-2020 ARM Limited. All rights reserved.
+ *
+ * This program is free software and is provided to you under the terms of the
+ * GNU General Public License version 2 as published by the Free Software
+ * Foundation, and any use by you of this program is subject to the terms
+ * of such GNU license.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, you can access it online at
+ * http://www.gnu.org/licenses/gpl-2.0.html.
+ *
  */
 
 #ifndef _KBASE_GPU_REGMAP_H_
@@ -25,7 +44,11 @@
 
 #include "mali_kbase_gpu_coherency.h"
 #include "mali_kbase_gpu_id.h"
+#if MALI_USE_CSF
+#include "backend/mali_kbase_gpu_regmap_csf.h"
+#else
 #include "backend/mali_kbase_gpu_regmap_jm.h"
+#endif
 
 /* Begin Register Offsets */
 /* GPU control registers */
@@ -62,7 +85,8 @@
 #define PWR_KEY                 0x050   /* (WO) Power manager key register */
 #define PWR_OVERRIDE0           0x054   /* (RW) Power manager override settings */
 #define PWR_OVERRIDE1           0x058   /* (RW) Power manager override settings */
-
+#define GPU_FEATURES_LO         0x060   /* (RO) GPU features, low word */
+#define GPU_FEATURES_HI         0x064   /* (RO) GPU features, high word */
 #define CYCLE_COUNT_LO          0x090   /* (RO) Cycle counter, low word */
 #define CYCLE_COUNT_HI          0x094   /* (RO) Cycle counter, high word */
 #define TIMESTAMP_LO            0x098   /* (RO) Global time stamp counter, low word */
@@ -137,6 +161,10 @@
 
 #define L2_PWRTRANS_LO          0x220   /* (RO) Level 2 cache power transition bitmap, low word */
 #define L2_PWRTRANS_HI          0x224   /* (RO) Level 2 cache power transition bitmap, high word */
+
+#define ASN_HASH_0              0x02C0 /* (RW) ASN hash function argument 0 */
+#define ASN_HASH(n)             (ASN_HASH_0 + (n)*4)
+#define ASN_HASH_COUNT          3
 
 #define STACK_PWRTRANS_LO       0xE40   /* (RO) Core stack power transition bitmap, low word */
 #define STACK_PWRTRANS_HI       0xE44   /* (RO) Core stack power transition bitmap, high word */
@@ -222,18 +250,12 @@
 
 /* End Register Offsets */
 
-/* IRQ flags */
-#define GPU_FAULT               (1 << 0)    /* A GPU Fault has occurred */
-#define MULTIPLE_GPU_FAULTS     (1 << 7)    /* More than one GPU Fault occurred. */
-#define RESET_COMPLETED         (1 << 8)    /* Set when a reset has completed. */
-#define POWER_CHANGED_SINGLE    (1 << 9)    /* Set when a single core has finished powering up or down. */
-#define POWER_CHANGED_ALL       (1 << 10)   /* Set when all cores have finished powering up or down. */
-
-#define PRFCNT_SAMPLE_COMPLETED (1 << 16)   /* Set when a performance count sample has completed. */
-#define CLEAN_CACHES_COMPLETED  (1 << 17)   /* Set when a cache clean operation has completed. */
-
-#define GPU_IRQ_REG_ALL (GPU_FAULT | MULTIPLE_GPU_FAULTS | RESET_COMPLETED \
-		| POWER_CHANGED_ALL | PRFCNT_SAMPLE_COMPLETED)
+/* Include POWER_CHANGED_SINGLE in debug builds for use in irq latency test. */
+#ifdef CONFIG_MALI_DEBUG
+#define GPU_IRQ_REG_ALL (GPU_IRQ_REG_COMMON | POWER_CHANGED_SINGLE)
+#else /* CONFIG_MALI_DEBUG */
+#define GPU_IRQ_REG_ALL (GPU_IRQ_REG_COMMON)
+#endif /* CONFIG_MALI_DEBUG */
 
 /*
  * MMU_IRQ_RAWSTAT register values. Values are valid also for
@@ -243,7 +265,8 @@
 #define MMU_PAGE_FAULT_FLAGS    16
 
 /* Macros returning a bitmask to retrieve page fault or bus error flags from
- * MMU registers */
+ * MMU registers
+ */
 #define MMU_PAGE_FAULT(n)       (1UL << (n))
 #define MMU_BUS_ERROR(n)        (1UL << ((n) + MMU_PAGE_FAULT_FLAGS))
 
@@ -282,6 +305,7 @@
 #define AS_FAULTSTATUS_EXCEPTION_TYPE_MASK (0xFF << AS_FAULTSTATUS_EXCEPTION_TYPE_SHIFT)
 #define AS_FAULTSTATUS_EXCEPTION_TYPE_GET(reg_val) \
 	(((reg_val)&AS_FAULTSTATUS_EXCEPTION_TYPE_MASK) >> AS_FAULTSTATUS_EXCEPTION_TYPE_SHIFT)
+#define AS_FAULTSTATUS_EXCEPTION_TYPE_TRANSLATION_FAULT_0 0xC0
 
 #define AS_FAULTSTATUS_ACCESS_TYPE_SHIFT 8
 #define AS_FAULTSTATUS_ACCESS_TYPE_MASK (0x3 << AS_FAULTSTATUS_ACCESS_TYPE_SHIFT)
@@ -330,11 +354,16 @@
 #define AS_COMMAND_UPDATE      0x01	/* Broadcasts the values in AS_TRANSTAB and ASn_MEMATTR to all MMUs */
 #define AS_COMMAND_LOCK        0x02	/* Issue a lock region command to all MMUs */
 #define AS_COMMAND_UNLOCK      0x03	/* Issue a flush region command to all MMUs */
-#define AS_COMMAND_FLUSH       0x04	/* Flush all L2 caches then issue a flush region command to all MMUs
-					   (deprecated - only for use with T60x) */
-#define AS_COMMAND_FLUSH_PT    0x04	/* Flush all L2 caches then issue a flush region command to all MMUs */
-#define AS_COMMAND_FLUSH_MEM   0x05	/* Wait for memory accesses to complete, flush all the L1s cache then
-					   flush all L2 caches then issue a flush region command to all MMUs */
+/* Flush all L2 caches then issue a flush region command to all MMUs
+ * (deprecated - only for use with T60x)
+ */
+#define AS_COMMAND_FLUSH 0x04
+/* Flush all L2 caches then issue a flush region command to all MMUs */
+#define AS_COMMAND_FLUSH_PT 0x04
+/* Wait for memory accesses to complete, flush all the L1s cache then flush all
+ * L2 caches then issue a flush region command to all MMUs
+ */
+#define AS_COMMAND_FLUSH_MEM 0x05
 
 /* GPU_STATUS values */
 #define GPU_STATUS_PRFCNT_ACTIVE            (1 << 2)    /* Set if the performance counters are active. */
@@ -420,6 +449,8 @@
 #define L2_CONFIG_SIZE_MASK         (0xFFul << L2_CONFIG_SIZE_SHIFT)
 #define L2_CONFIG_HASH_SHIFT        24
 #define L2_CONFIG_HASH_MASK         (0xFFul << L2_CONFIG_HASH_SHIFT)
+#define L2_CONFIG_ASN_HASH_ENABLE_SHIFT        24
+#define L2_CONFIG_ASN_HASH_ENABLE_MASK         (1ul << L2_CONFIG_ASN_HASH_ENABLE_SHIFT)
 /* End L2_CONFIG register */
 
 /* IDVS_GROUP register */

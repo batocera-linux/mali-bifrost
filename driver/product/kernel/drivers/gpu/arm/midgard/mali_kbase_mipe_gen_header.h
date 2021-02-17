@@ -1,6 +1,6 @@
 /*
  *
- * (C) COPYRIGHT 2010-2020 ARM Limited. All rights reserved.
+ * (C) COPYRIGHT ARM Limited. All rights reserved.
  *
  * This program is free software and is provided to you under the terms of the
  * GNU General Public License version 2 as published by the Free Software
@@ -17,6 +17,25 @@
  * http://www.gnu.org/licenses/gpl-2.0.html.
  *
  * SPDX-License-Identifier: GPL-2.0
+ *
+ *//* SPDX-License-Identifier: GPL-2.0 */
+/*
+ *
+ * (C) COPYRIGHT 2010-2020 ARM Limited. All rights reserved.
+ *
+ * This program is free software and is provided to you under the terms of the
+ * GNU General Public License version 2 as published by the Free Software
+ * Foundation, and any use by you of this program is subject to the terms
+ * of such GNU license.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, you can access it online at
+ * http://www.gnu.org/licenses/gpl-2.0.html.
  *
  */
 
@@ -59,6 +78,17 @@
 #endif
 
 /**
+ * A compiler attribute for packing structures
+ *
+ * e.g. __packed
+ *
+ * Default value is __attribute__((__packed__))
+ */
+#if !defined(MIPE_HEADER_PACKED_ATTRIBUTE)
+#define MIPE_HEADER_PACKED_ATTRIBUTE __attribute__((__packed__))
+#endif
+
+/**
  * MIPE stream id.
  *
  * See enum tl_stream_id.
@@ -80,6 +110,7 @@
  * The list of tracepoints to process.
  *
  * It should be defined as follows:
+ *
  * #define MIPE_HEADER_TRACEPOINT_LIST \
  *     TRACEPOINT_DESC(FIRST_TRACEPOINT, "Some description", "@II", "first_arg,second_arg") \
  *     TRACEPOINT_DESC(SECOND_TRACEPOINT, "Some description", "@II", "first_arg,second_arg") \
@@ -105,6 +136,7 @@
  * The list of enums to process.
  *
  * It should be defined as follows:
+ *
  * #define MIPE_HEADER_ENUM_LIST \
  *     ENUM_DESC(enum_arg_name, enum_value) \
  *     ENUM_DESC(enum_arg_name, enum_value) \
@@ -149,7 +181,7 @@ const struct
 		char _arg_types[sizeof(arg_types)];	\
 		u32  _size_arg_names;		\
 		char _arg_names[sizeof(arg_names)];	\
-	} __attribute__ ((__packed__)) __ ## name;
+	} MIPE_HEADER_PACKED_ATTRIBUTE __ ## name;
 
 #define ENUM_DESC(arg_name, value)					\
 	struct {							\
@@ -159,13 +191,13 @@ const struct
 		u32 _value;						\
 		u32 _value_str_len;					\
 		char _value_str[sizeof(#value)];			\
-	} __attribute__ ((__packed__)) __ ## arg_name ## _ ## value;
+	} MIPE_HEADER_PACKED_ATTRIBUTE __ ## arg_name ## _ ## value;
 
 	MIPE_HEADER_TRACEPOINT_LIST
 	MIPE_HEADER_ENUM_LIST
 #undef TRACEPOINT_DESC
 #undef ENUM_DESC
-} __attribute__((packed)) MIPE_HEADER_BLOB_VAR_NAME MIPE_HEADER_BLOB_VAR_ATTRIBUTE = {
+} MIPE_HEADER_PACKED_ATTRIBUTE MIPE_HEADER_BLOB_VAR_NAME MIPE_HEADER_BLOB_VAR_ATTRIBUTE = {
 	._mipe_w0 = MIPE_PACKET_HEADER_W0(
 		TL_PACKET_FAMILY_TL,
 		MIPE_HEADER_PKT_CLASS,

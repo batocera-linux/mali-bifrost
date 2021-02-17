@@ -1,6 +1,6 @@
 /*
  *
- * (C) COPYRIGHT 2010-2017 ARM Limited. All rights reserved.
+ * (C) COPYRIGHT ARM Limited. All rights reserved.
  *
  * This program is free software and is provided to you under the terms of the
  * GNU General Public License version 2 as published by the Free Software
@@ -18,6 +18,25 @@
  *
  * SPDX-License-Identifier: GPL-2.0
  *
+ *//* SPDX-License-Identifier: GPL-2.0 */
+/*
+ *
+ * (C) COPYRIGHT 2010-2016, 2020 ARM Limited. All rights reserved.
+ *
+ * This program is free software and is provided to you under the terms of the
+ * GNU General Public License version 2 as published by the Free Software
+ * Foundation, and any use by you of this program is subject to the terms
+ * of such GNU license.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, you can access it online at
+ * http://www.gnu.org/licenses/gpl-2.0.html.
+ *
  */
 
 #ifndef _KBASE_DMA_FENCE_H_
@@ -28,7 +47,6 @@
 #include <linux/list.h>
 #include <linux/reservation.h>
 #include <mali_kbase_fence.h>
-
 
 /* Forward declaration from mali_kbase_defs.h */
 struct kbase_jd_atom;
@@ -45,7 +63,11 @@ struct kbase_context;
  * reservation objects.
  */
 struct kbase_dma_fence_resv_info {
+#if (KERNEL_VERSION(5, 4, 0) > LINUX_VERSION_CODE)
 	struct reservation_object **resv_objs;
+#else
+	struct dma_resv **resv_objs;
+#endif
 	unsigned int dma_fence_resv_count;
 	unsigned long *dma_fence_excl_bitmap;
 };
@@ -60,9 +82,15 @@ struct kbase_dma_fence_resv_info {
  * reservation_objects. At the same time keeps track of which objects require
  * exclusive access in dma_fence_excl_bitmap.
  */
+#if (KERNEL_VERSION(5, 4, 0) > LINUX_VERSION_CODE)
 void kbase_dma_fence_add_reservation(struct reservation_object *resv,
 				     struct kbase_dma_fence_resv_info *info,
 				     bool exclusive);
+#else
+void kbase_dma_fence_add_reservation(struct dma_resv *resv,
+				     struct kbase_dma_fence_resv_info *info,
+				     bool exclusive);
+#endif
 
 /**
  * kbase_dma_fence_wait() - Creates a new fence and attaches it to the resv_objs
@@ -122,8 +150,7 @@ void kbase_dma_fence_term(struct kbase_context *kctx);
  */
 int kbase_dma_fence_init(struct kbase_context *kctx);
 
-
-#else /* CONFIG_MALI_DMA_FENCE */
+#else /* !CONFIG_MALI_DMA_FENCE */
 /* Dummy functions for when dma-buf fence isn't enabled. */
 
 static inline int kbase_dma_fence_init(struct kbase_context *kctx)

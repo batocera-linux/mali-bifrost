@@ -1,6 +1,6 @@
 /*
  *
- * (C) COPYRIGHT 2020 ARM Limited. All rights reserved.
+ * (C) COPYRIGHT ARM Limited. All rights reserved.
  *
  * This program is free software and is provided to you under the terms of the
  * GNU General Public License version 2 as published by the Free Software
@@ -17,6 +17,25 @@
  * http://www.gnu.org/licenses/gpl-2.0.html.
  *
  * SPDX-License-Identifier: GPL-2.0
+ *
+ *//* SPDX-License-Identifier: GPL-2.0 */
+/*
+ *
+ * (C) COPYRIGHT 2020 ARM Limited. All rights reserved.
+ *
+ * This program is free software and is provided to you under the terms of the
+ * GNU General Public License version 2 as published by the Free Software
+ * Foundation, and any use by you of this program is subject to the terms
+ * of such GNU license.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, you can access it online at
+ * http://www.gnu.org/licenses/gpl-2.0.html.
  *
  */
 
@@ -92,16 +111,57 @@
  *   flags member. Previous variants of this structure are kept and given _10_2
  *   and _11_5 suffixes.
  * - The above changes are checked for safe values in usual builds
+ * 11.21:
+ * - v2.0 of mali_trace debugfs file, which now versions the file separately
+ * 11.22:
+ * - Added base_jd_atom (v3), which is seq_nr + base_jd_atom_v2.
+ *   KBASE_IOCTL_JOB_SUBMIT supports both in parallel.
+ * 11.23:
+ * - Modified KBASE_IOCTL_MEM_COMMIT behavior to reject requests to modify
+ *   the physical memory backing of JIT allocations. This was not supposed
+ *   to be a valid use case, but it was allowed by the previous implementation.
+ * 11.24:
+ * - Added a sysfs file 'serialize_jobs' inside a new sub-directory
+ *   'scheduling'.
+ * 11.25:
+ * - Enabled JIT pressure limit in base/kbase by default
+ * 11.26
+ * - Added kinstr_jm API
+ * 11.27
+ * - Backwards compatible extension to HWC ioctl.
+ * 11.28:
+ * - Added kernel side cache ops needed hint
+ * 11.29:
+ * - Reserve ioctl 52
+ * 11.30:
+ * - Add a new priority level BASE_JD_PRIO_REALTIME
+ * - Add ioctl 54: This controls the priority setting.
  */
 #define BASE_UK_VERSION_MAJOR 11
-#define BASE_UK_VERSION_MINOR 20
+#define BASE_UK_VERSION_MINOR 30
+
+/**
+ * struct kbase_ioctl_version_check - Check version compatibility between
+ * kernel and userspace
+ *
+ * @major: Major version number
+ * @minor: Minor version number
+ */
+struct kbase_ioctl_version_check {
+	__u16 major;
+	__u16 minor;
+};
+
+#define KBASE_IOCTL_VERSION_CHECK \
+	_IOWR(KBASE_IOCTL_TYPE, 0, struct kbase_ioctl_version_check)
+
 
 /**
  * struct kbase_ioctl_job_submit - Submit jobs/atoms to the kernel
  *
- * @addr: Memory address of an array of struct base_jd_atom_v2
+ * @addr: Memory address of an array of struct base_jd_atom_v2 or v3
  * @nr_atoms: Number of entries in the array
- * @stride: sizeof(struct base_jd_atom_v2)
+ * @stride: sizeof(struct base_jd_atom_v2) or sizeof(struct base_jd_atom)
  */
 struct kbase_ioctl_job_submit {
 	__u64 addr;
@@ -130,5 +190,51 @@ struct kbase_ioctl_soft_event_update {
 #define KBASE_IOCTL_SOFT_EVENT_UPDATE \
 	_IOW(KBASE_IOCTL_TYPE, 28, struct kbase_ioctl_soft_event_update)
 
+/**
+ * struct kbase_kinstr_jm_fd_out - Explains the compatibility information for
+ * the `struct kbase_kinstr_jm_atom_state_change` structure returned from the
+ * kernel
+ *
+ * @size:    The size of the `struct kbase_kinstr_jm_atom_state_change`
+ * @version: Represents a breaking change in the
+ *           `struct kbase_kinstr_jm_atom_state_change`
+ * @padding: Explicit padding to get the structure up to 64bits. See
+ * https://www.kernel.org/doc/Documentation/ioctl/botching-up-ioctls.rst
+ *
+ * The `struct kbase_kinstr_jm_atom_state_change` may have extra members at the
+ * end of the structure that older user space might not understand. If the
+ * `version` is the same, the structure is still compatible with newer kernels.
+ * The `size` can be used to cast the opaque memory returned from the kernel.
+ */
+struct kbase_kinstr_jm_fd_out {
+	__u16 size;
+	__u8 version;
+	__u8 padding[5];
+};
+
+/**
+ * struct kbase_kinstr_jm_fd_in - Options when creating the file descriptor
+ *
+ * @count: Number of atom states that can be stored in the kernel circular
+ *         buffer. Must be a power of two
+ * @padding: Explicit padding to get the structure up to 64bits. See
+ * https://www.kernel.org/doc/Documentation/ioctl/botching-up-ioctls.rst
+ */
+struct kbase_kinstr_jm_fd_in {
+	__u16 count;
+	__u8 padding[6];
+};
+
+union kbase_kinstr_jm_fd {
+	struct kbase_kinstr_jm_fd_in in;
+	struct kbase_kinstr_jm_fd_out out;
+};
+
+#define KBASE_IOCTL_KINSTR_JM_FD \
+	_IOWR(KBASE_IOCTL_TYPE, 51, union kbase_kinstr_jm_fd)
+
+
+#define KBASE_IOCTL_VERSION_CHECK_RESERVED \
+	_IOWR(KBASE_IOCTL_TYPE, 52, struct kbase_ioctl_version_check)
 
 #endif /* _KBASE_JM_IOCTL_H_ */

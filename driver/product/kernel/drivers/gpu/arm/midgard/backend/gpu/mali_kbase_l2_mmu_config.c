@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-2.0
 /*
  *
- * (C) COPYRIGHT 2019 ARM Limited. All rights reserved.
+ * (C) COPYRIGHT 2019-2020 ARM Limited. All rights reserved.
  *
  * This program is free software and is provided to you under the terms of the
  * GNU General Public License version 2 as published by the Free Software
@@ -21,11 +21,10 @@
  *
  */
 
-
 #include <mali_kbase.h>
 #include <mali_kbase_bits.h>
 #include <mali_kbase_config_defaults.h>
-#include <backend/gpu/mali_kbase_device_internal.h>
+#include <device/mali_kbase_device.h>
 #include "mali_kbase_l2_mmu_config.h"
 
 /**
@@ -57,26 +56,37 @@ struct l2_mmu_config_limit {
 /*
  * Zero represents no limit
  *
- * For LBEX TBEX TTRX and TNAX:
+ * For LBEX TBEX TBAX TTRX and TNAX:
  *   The value represents the number of outstanding reads (6 bits) or writes (5 bits)
  *
  * For all other GPUS it is a fraction see: mali_kbase_config_defaults.h
  */
 static const struct l2_mmu_config_limit limits[] = {
-	 /* GPU                       read                  write            */
-	 {GPU_ID2_PRODUCT_LBEX, {0, GENMASK(10, 5), 5}, {0, GENMASK(16, 12), 12} },
-	 {GPU_ID2_PRODUCT_TBEX, {0, GENMASK(10, 5), 5}, {0, GENMASK(16, 12), 12} },
-	 {GPU_ID2_PRODUCT_TTRX, {0, GENMASK(12, 7), 7}, {0, GENMASK(17, 13), 13} },
-	 {GPU_ID2_PRODUCT_TNAX, {0, GENMASK(12, 7), 7}, {0, GENMASK(17, 13), 13} },
-	 {GPU_ID2_PRODUCT_TGOX,
-	   {KBASE_3BIT_AID_32, GENMASK(14, 12), 12},
-	   {KBASE_3BIT_AID_32, GENMASK(17, 15), 15} },
-	 {GPU_ID2_PRODUCT_TNOX,
-	   {KBASE_3BIT_AID_32, GENMASK(14, 12), 12},
-	   {KBASE_3BIT_AID_32, GENMASK(17, 15), 15} },
+	/* GPU, read, write */
+	{GPU_ID2_PRODUCT_LBEX,
+		{0, GENMASK(10, 5), 5},
+		{0, GENMASK(16, 12), 12} },
+	{GPU_ID2_PRODUCT_TBEX,
+		{0, GENMASK(10, 5), 5},
+		{0, GENMASK(16, 12), 12} },
+	{GPU_ID2_PRODUCT_TBAX,
+		{0, GENMASK(10, 5), 5},
+		{0, GENMASK(16, 12), 12} },
+	{GPU_ID2_PRODUCT_TTRX,
+		{0, GENMASK(12, 7), 7},
+		{0, GENMASK(17, 13), 13} },
+	{GPU_ID2_PRODUCT_TNAX,
+		{0, GENMASK(12, 7), 7},
+		{0, GENMASK(17, 13), 13} },
+	{GPU_ID2_PRODUCT_TGOX,
+		{KBASE_3BIT_AID_32, GENMASK(14, 12), 12},
+		{KBASE_3BIT_AID_32, GENMASK(17, 15), 15} },
+	{GPU_ID2_PRODUCT_TNOX,
+		{KBASE_3BIT_AID_32, GENMASK(14, 12), 12},
+		{KBASE_3BIT_AID_32, GENMASK(17, 15), 15} },
 };
 
-void kbase_set_mmu_quirks(struct kbase_device *kbdev)
+int kbase_set_mmu_quirks(struct kbase_device *kbdev)
 {
 	/* All older GPUs had 2 bits for both fields, this is a default */
 	struct l2_mmu_config_limit limit = {
@@ -101,18 +111,23 @@ void kbase_set_mmu_quirks(struct kbase_device *kbdev)
 
 	mmu_config = kbase_reg_read(kbdev, GPU_CONTROL_REG(L2_MMU_CONFIG));
 
+	if (kbase_is_gpu_removed(kbdev))
+		return -EIO;
+
 	mmu_config &= ~(limit.read.mask | limit.write.mask);
 	/* Can't use FIELD_PREP() macro here as the mask isn't constant */
 	mmu_config |= (limit.read.value << limit.read.shift) |
-		      (limit.write.value << limit.write.shift);
+			(limit.write.value << limit.write.shift);
 
 	kbdev->hw_quirks_mmu = mmu_config;
 
 	if (kbdev->system_coherency == COHERENCY_ACE) {
 		/* Allow memory configuration disparity to be ignored,
-		 * we optimize the use of shared memory and thus we
-		 * expect some disparity in the memory configuration.
-		 */
+		* we optimize the use of shared memory and thus we
+		* expect some disparity in the memory configuration.
+		*/
 		kbdev->hw_quirks_mmu |= L2_MMU_CONFIG_ALLOW_SNOOP_DISPARITY;
 	}
+
+	return 0;
 }

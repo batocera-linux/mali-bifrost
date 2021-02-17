@@ -1,6 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  *
- * (C) COPYRIGHT 2011-2020 ARM Limited. All rights reserved.
+ * (C) COPYRIGHT 2011-2021 ARM Limited. All rights reserved.
  *
  * This program is free software and is provided to you under the terms of the
  * GNU General Public License version 2 as published by the Free Software
@@ -20,14 +21,13 @@
  *
  */
 
-
-
 /*
  * Job Scheduler Implementation
  */
 #include <mali_kbase.h>
 #include <mali_kbase_js.h>
 #include <tl/mali_kbase_tracepoints.h>
+#include <mali_linux_trace.h>
 #include <mali_kbase_hw.h>
 #include <mali_kbase_ctx_sched.h>
 
@@ -36,7 +36,7 @@
 
 #include "mali_kbase_jm.h"
 #include "mali_kbase_hwaccess_jm.h"
-
+#include <linux/priority_control_manager.h>
 
 /*
  * Private types
@@ -45,26 +45,30 @@
 /* Bitpattern indicating the result of releasing a context */
 enum {
 	/* The context was descheduled - caller should try scheduling in a new
-	 * one to keep the runpool full */
+	 * one to keep the runpool full
+	 */
 	KBASEP_JS_RELEASE_RESULT_WAS_DESCHEDULED = (1u << 0),
 	/* Ctx attributes were changed - caller should try scheduling all
-	 * contexts */
+	 * contexts
+	 */
 	KBASEP_JS_RELEASE_RESULT_SCHED_ALL = (1u << 1)
 };
 
 typedef u32 kbasep_js_release_result;
 
 const int kbasep_js_atom_priority_to_relative[BASE_JD_NR_PRIO_LEVELS] = {
-	KBASE_JS_ATOM_SCHED_PRIO_MED, /* BASE_JD_PRIO_MEDIUM */
-	KBASE_JS_ATOM_SCHED_PRIO_HIGH, /* BASE_JD_PRIO_HIGH */
-	KBASE_JS_ATOM_SCHED_PRIO_LOW  /* BASE_JD_PRIO_LOW */
+	KBASE_JS_ATOM_SCHED_PRIO_MED,      /* BASE_JD_PRIO_MEDIUM */
+	KBASE_JS_ATOM_SCHED_PRIO_HIGH,     /* BASE_JD_PRIO_HIGH */
+	KBASE_JS_ATOM_SCHED_PRIO_LOW,      /* BASE_JD_PRIO_LOW */
+	KBASE_JS_ATOM_SCHED_PRIO_REALTIME  /* BASE_JD_PRIO_REALTIME */
 };
 
 const base_jd_prio
 kbasep_js_relative_priority_to_atom[KBASE_JS_ATOM_SCHED_PRIO_COUNT] = {
-	BASE_JD_PRIO_HIGH,   /* KBASE_JS_ATOM_SCHED_PRIO_HIGH */
-	BASE_JD_PRIO_MEDIUM, /* KBASE_JS_ATOM_SCHED_PRIO_MED */
-	BASE_JD_PRIO_LOW     /* KBASE_JS_ATOM_SCHED_PRIO_LOW */
+	BASE_JD_PRIO_REALTIME,   /* KBASE_JS_ATOM_SCHED_PRIO_REALTIME */
+	BASE_JD_PRIO_HIGH,       /* KBASE_JS_ATOM_SCHED_PRIO_HIGH */
+	BASE_JD_PRIO_MEDIUM,     /* KBASE_JS_ATOM_SCHED_PRIO_MED */
+	BASE_JD_PRIO_LOW         /* KBASE_JS_ATOM_SCHED_PRIO_LOW */
 };
 
 
@@ -81,22 +85,19 @@ static int kbase_js_get_slot(struct kbase_device *kbdev,
 static void kbase_js_foreach_ctx_job(struct kbase_context *kctx,
 		kbasep_js_ctx_job_cb callback);
 
-/* Helper for trace subcodes */
-#if KBASE_TRACE_ENABLE
-static int kbasep_js_trace_get_refcnt(struct kbase_device *kbdev,
-		struct kbase_context *kctx)
+/* Helper for ktrace */
+#if KBASE_KTRACE_ENABLE
+static int kbase_ktrace_get_ctx_refcnt(struct kbase_context *kctx)
 {
 	return atomic_read(&kctx->refcount);
 }
-#else				/* KBASE_TRACE_ENABLE  */
-static int kbasep_js_trace_get_refcnt(struct kbase_device *kbdev,
-		struct kbase_context *kctx)
+#else /* KBASE_KTRACE_ENABLE  */
+static int kbase_ktrace_get_ctx_refcnt(struct kbase_context *kctx)
 {
-	CSTD_UNUSED(kbdev);
 	CSTD_UNUSED(kctx);
 	return 0;
 }
-#endif				/* KBASE_TRACE_ENABLE  */
+#endif /* KBASE_KTRACE_ENABLE  */
 
 /*
  * Private functions
@@ -187,7 +188,7 @@ jsctx_rb_none_to_pull(struct kbase_context *kctx, int js)
 
 	lockdep_assert_held(&kctx->kbdev->hwaccess_lock);
 
-	for (prio = BASE_JD_PRIO_MEDIUM;
+	for (prio = KBASE_JS_ATOM_SCHED_PRIO_REALTIME;
 		prio < KBASE_JS_ATOM_SCHED_PRIO_COUNT; prio++) {
 		if (!jsctx_rb_none_to_pull_prio(kctx, js, prio))
 			return false;
@@ -280,7 +281,7 @@ jsctx_queue_foreach(struct kbase_context *kctx, int js,
 {
 	int prio;
 
-	for (prio = BASE_JD_PRIO_MEDIUM;
+	for (prio = KBASE_JS_ATOM_SCHED_PRIO_REALTIME;
 		prio < KBASE_JS_ATOM_SCHED_PRIO_COUNT; prio++)
 		jsctx_queue_foreach_prio(kctx, js, prio, callback);
 }
@@ -322,7 +323,7 @@ jsctx_rb_peek_prio(struct kbase_context *kctx, int js, int prio)
  * @js:   Job slot id to check.
  *
  * Check the ring buffers for all priorities, starting from
- * KBASE_JS_ATOM_SCHED_PRIO_HIGH, for the specified @js and @prio and return a
+ * KBASE_JS_ATOM_SCHED_PRIO_REALTIME, for the specified @js and @prio and return a
  * pointer to the next atom, unless all the priority's ring buffers are empty.
  *
  * Caller must hold the hwaccess_lock.
@@ -336,7 +337,7 @@ jsctx_rb_peek(struct kbase_context *kctx, int js)
 
 	lockdep_assert_held(&kctx->kbdev->hwaccess_lock);
 
-	for (prio = BASE_JD_PRIO_MEDIUM;
+	for (prio = KBASE_JS_ATOM_SCHED_PRIO_REALTIME;
 		prio < KBASE_JS_ATOM_SCHED_PRIO_COUNT; prio++) {
 		struct kbase_jd_atom *katom;
 
@@ -451,7 +452,8 @@ int kbasep_js_devdata_init(struct kbase_device * const kbdev)
 
 #ifdef CONFIG_MALI_DEBUG
 	/* Soft-stop will be disabled on a single context by default unless
-	 * softstop_always is set */
+	 * softstop_always is set
+	 */
 	jsdd->softstop_always = false;
 #endif				/* CONFIG_MALI_DEBUG */
 	jsdd->nr_all_contexts_running = 0;
@@ -534,11 +536,11 @@ int kbasep_js_devdata_init(struct kbase_device * const kbdev)
 			kbdev->gpu_props.props.raw_props.js_features[i]);
 
 	/* On error, we could continue on: providing none of the below resources
-	 * rely on the ones above */
+	 * rely on the ones above
+	 */
 
 	mutex_init(&jsdd->runpool_mutex);
 	mutex_init(&jsdd->queue_mutex);
-	spin_lock_init(&kbdev->hwaccess_lock);
 	sema_init(&jsdd->schedule_sem, 1);
 
 	for (i = 0; i < kbdev->gpu_props.num_job_slots; ++i) {
@@ -599,11 +601,13 @@ int kbasep_js_kctx_init(struct kbase_context *const kctx)
 			sizeof(js_kctx_info->ctx.ctx_attr_ref_count));
 
 	/* Initially, the context is disabled from submission until the create
-	 * flags are set */
+	 * flags are set
+	 */
 	kbase_ctx_flag_set(kctx, KCTX_SUBMIT_DISABLED);
 
 	/* On error, we could continue on: providing none of the below resources
-	 * rely on the ones above */
+	 * rely on the ones above
+	 */
 	mutex_init(&js_kctx_info->ctx.jsctx_mutex);
 
 	init_waitqueue_head(&js_kctx_info->ctx.is_scheduled_wait);
@@ -1024,7 +1028,8 @@ static bool kbase_js_dep_validate(struct kbase_context *kctx,
 			}
 
 			/* Dependencies with different priorities can't
-			  be represented in the ringbuffer */
+			 * be represented in the ringbuffer
+			 */
 			if (prio != dep_prio) {
 				dev_dbg(kbdev->dev,
 					"Different atom priorities\n");
@@ -1034,7 +1039,8 @@ static bool kbase_js_dep_validate(struct kbase_context *kctx,
 
 			if (js == dep_js) {
 				/* Only one same-slot dependency can be
-				 * represented in the ringbuffer */
+				 * represented in the ringbuffer
+				 */
 				if (has_dep) {
 					dev_dbg(kbdev->dev,
 						"Too many same-slot deps\n");
@@ -1042,7 +1048,8 @@ static bool kbase_js_dep_validate(struct kbase_context *kctx,
 					break;
 				}
 				/* Each dependee atom can only have one
-				 * same-slot dependency */
+				 * same-slot dependency
+				 */
 				if (dep_atom->post_dep) {
 					dev_dbg(kbdev->dev,
 						"Too many same-slot successors\n");
@@ -1052,7 +1059,8 @@ static bool kbase_js_dep_validate(struct kbase_context *kctx,
 				has_dep = true;
 			} else {
 				/* Only one cross-slot dependency can be
-				 * represented in the ringbuffer */
+				 * represented in the ringbuffer
+				 */
 				if (has_x_dep) {
 					dev_dbg(kbdev->dev,
 						"Too many cross-slot deps\n");
@@ -1060,7 +1068,8 @@ static bool kbase_js_dep_validate(struct kbase_context *kctx,
 					break;
 				}
 				/* Each dependee atom can only have one
-				 * cross-slot dependency */
+				 * cross-slot dependency
+				 */
 				if (dep_atom->x_post_dep) {
 					dev_dbg(kbdev->dev,
 						"Too many cross-slot successors\n");
@@ -1068,7 +1077,8 @@ static bool kbase_js_dep_validate(struct kbase_context *kctx,
 					break;
 				}
 				/* The dependee atom can not already be in the
-				 * HW access ringbuffer */
+				 * HW access ringbuffer
+				 */
 				if (dep_atom->gpu_rb_state !=
 					KBASE_ATOM_GPU_RB_NOT_IN_SLOT_RB) {
 					dev_dbg(kbdev->dev,
@@ -1078,7 +1088,8 @@ static bool kbase_js_dep_validate(struct kbase_context *kctx,
 					break;
 				}
 				/* The dependee atom can not already have
-				 * completed */
+				 * completed
+				 */
 				if (dep_atom->status !=
 						KBASE_JD_ATOM_STATE_IN_JS) {
 					dev_dbg(kbdev->dev,
@@ -1096,7 +1107,8 @@ static bool kbase_js_dep_validate(struct kbase_context *kctx,
 	}
 
 	/* If dependencies can be represented by ringbuffer then clear them from
-	 * atom structure */
+	 * atom structure
+	 */
 	if (ret) {
 		for (i = 0; i < 2; i++) {
 			struct kbase_jd_atom *dep_atom = katom->dep[i].atom;
@@ -1185,7 +1197,7 @@ void kbase_js_update_ctx_priority(struct kbase_context *kctx)
 		/* Determine the new priority for context, as per the priority
 		 * of currently in-use atoms.
 		 */
-		for (prio = BASE_JD_PRIO_MEDIUM;
+		for (prio = KBASE_JS_ATOM_SCHED_PRIO_REALTIME;
 			prio < KBASE_JS_ATOM_SCHED_PRIO_COUNT; prio++) {
 			if (kctx->atoms_count[prio]) {
 				new_priority = prio;
@@ -1196,6 +1208,7 @@ void kbase_js_update_ctx_priority(struct kbase_context *kctx)
 
 	kbase_js_set_ctx_priority(kctx, new_priority);
 }
+KBASE_EXPORT_TEST_API(kbase_js_update_ctx_priority);
 
 /**
  * js_add_start_rp() - Add an atom that starts a renderpass to the job scheduler
@@ -1217,8 +1230,9 @@ static int js_add_start_rp(struct kbase_jd_atom *const start_katom)
 	if (start_katom->core_req & BASE_JD_REQ_END_RENDERPASS)
 		return -EINVAL;
 
-	if (start_katom->renderpass_id >= ARRAY_SIZE(kctx->jctx.renderpasses))
-		return -EINVAL;
+	compiletime_assert((1ull << (sizeof(start_katom->renderpass_id) * 8)) <=
+			ARRAY_SIZE(kctx->jctx.renderpasses),
+			"Should check invalid access to renderpasses");
 
 	rp = &kctx->jctx.renderpasses[start_katom->renderpass_id];
 
@@ -1262,8 +1276,9 @@ static int js_add_end_rp(struct kbase_jd_atom *const end_katom)
 	if (end_katom->core_req & BASE_JD_REQ_START_RENDERPASS)
 		return -EINVAL;
 
-	if (end_katom->renderpass_id >= ARRAY_SIZE(kctx->jctx.renderpasses))
-		return -EINVAL;
+	compiletime_assert((1ull << (sizeof(end_katom->renderpass_id) * 8)) <=
+			ARRAY_SIZE(kctx->jctx.renderpasses),
+			"Should check invalid access to renderpasses");
 
 	rp = &kctx->jctx.renderpasses[end_katom->renderpass_id];
 
@@ -1351,7 +1366,8 @@ bool kbasep_js_add_job(struct kbase_context *kctx,
 			(void *)atom, (void *)kctx, js_kctx_info->ctx.nr_jobs);
 
 		/* Setting atom status back to queued as it still has unresolved
-		 * dependencies */
+		 * dependencies
+		 */
 		atom->status = KBASE_JD_ATOM_STATE_QUEUED;
 		dev_dbg(kbdev->dev, "Atom %p status to queued\n", (void *)atom);
 
@@ -1376,8 +1392,8 @@ bool kbasep_js_add_job(struct kbase_context *kctx,
 
 	enqueue_required = kbase_js_dep_resolved_submit(kctx, atom);
 
-	KBASE_TRACE_ADD_REFCOUNT(kbdev, JS_ADD_JOB, kctx, atom, atom->jc,
-				kbasep_js_trace_get_refcnt(kbdev, kctx));
+	KBASE_KTRACE_ADD_JM_REFCOUNT(kbdev, JS_ADD_JOB, kctx, atom, atom->jc,
+				kbase_ktrace_get_ctx_refcnt(kctx));
 
 	/* Context Attribute Refcounting */
 	kbasep_js_ctx_attr_ctx_retain_atom(kbdev, kctx, atom);
@@ -1391,7 +1407,8 @@ bool kbasep_js_add_job(struct kbase_context *kctx,
 					kbdev, kctx, atom->slot_nr);
 	}
 	/* If this context is active and the atom is the first on its slot,
-	 * kick the job manager to attempt to fast-start the atom */
+	 * kick the job manager to attempt to fast-start the atom
+	 */
 	if (enqueue_required && kctx ==
 			kbdev->hwaccess.active_kctx[atom->slot_nr])
 		kbase_jm_try_kick(kbdev, 1 << atom->slot_nr);
@@ -1406,17 +1423,20 @@ bool kbasep_js_add_job(struct kbase_context *kctx,
 		if (kbase_ctx_flag(kctx, KCTX_DYING)) {
 			/* A job got added while/after kbase_job_zap_context()
 			 * was called on a non-scheduled context. Kill that job
-			 * by killing the context. */
+			 * by killing the context.
+			 */
 			kbasep_js_runpool_requeue_or_kill_ctx(kbdev, kctx,
 					false);
 		} else if (js_kctx_info->ctx.nr_jobs == 1) {
 			/* Handle Refcount going from 0 to 1: schedule the
-			 * context on the Queue */
+			 * context on the Queue
+			 */
 			KBASE_DEBUG_ASSERT(!kbase_ctx_flag(kctx, KCTX_SCHEDULED));
 			dev_dbg(kbdev->dev, "JS: Enqueue Context %p", kctx);
 
-			/* Queue was updated - caller must try to
-			 * schedule the head context */
+			/* Queue was updated - caller must try to schedule the
+			 * head context
+			 */
 			WARN_ON(!enqueue_required);
 		}
 	}
@@ -1443,8 +1463,8 @@ void kbasep_js_remove_job(struct kbase_device *kbdev,
 
 	js_kctx_info = &kctx->jctx.sched_info;
 
-	KBASE_TRACE_ADD_REFCOUNT(kbdev, JS_REMOVE_JOB, kctx, atom, atom->jc,
-			kbasep_js_trace_get_refcnt(kbdev, kctx));
+	KBASE_KTRACE_ADD_JM_REFCOUNT(kbdev, JS_REMOVE_JOB, kctx, atom, atom->jc,
+			kbase_ktrace_get_ctx_refcnt(kctx));
 
 	/* De-refcount ctx.nr_jobs */
 	KBASE_DEBUG_ASSERT(js_kctx_info->ctx.nr_jobs > 0);
@@ -1480,7 +1500,8 @@ bool kbasep_js_remove_cancelled_job(struct kbase_device *kbdev,
 	 *
 	 * This is because it returns false for soft-stopped atoms, but we
 	 * want to override that, because we're cancelling an atom regardless of
-	 * whether it was soft-stopped or not */
+	 * whether it was soft-stopped or not
+	 */
 	attr_state_changed = kbasep_js_ctx_attr_ctx_release_atom(kbdev, kctx,
 			&katom_retained_state);
 	spin_unlock_irqrestore(&kbdev->hwaccess_lock, flags);
@@ -1527,10 +1548,11 @@ static kbasep_js_release_result kbasep_js_run_jobs_after_ctx_and_atom_release(
 
 	if (js_devdata->nr_user_contexts_running != 0 && runpool_ctx_attr_change) {
 		/* A change in runpool ctx attributes might mean we can
-		 * run more jobs than before  */
+		 * run more jobs than before
+		 */
 		result = KBASEP_JS_RELEASE_RESULT_SCHED_ALL;
 
-		KBASE_TRACE_ADD_SLOT(kbdev, JD_DONE_TRY_RUN_NEXT_JOB,
+		KBASE_KTRACE_ADD_JM_SLOT(kbdev, JD_DONE_TRY_RUN_NEXT_JOB,
 					kctx, NULL, 0u, 0);
 	}
 	return result;
@@ -1608,10 +1630,10 @@ static kbasep_js_release_result kbasep_js_runpool_release_ctx_internal(
 		runpool_ctx_attr_change |= kbasep_js_ctx_attr_ctx_release_atom(
 				kbdev, kctx, katom_retained_state);
 
-	KBASE_TRACE_ADD_REFCOUNT(kbdev, JS_RELEASE_CTX, kctx, NULL, 0u,
-			new_ref_count);
-
 	if (new_ref_count == 2 && kbase_ctx_flag(kctx, KCTX_PRIVILEGED) &&
+#ifdef CONFIG_MALI_ARBITER_SUPPORT
+			!kbase_pm_is_gpu_lost(kbdev) &&
+#endif
 			!kbase_pm_is_suspending(kbdev)) {
 		/* Context is kept scheduled into an address space even when
 		 * there are no jobs, in this case we have to handle the
@@ -1626,15 +1648,20 @@ static kbasep_js_release_result kbasep_js_runpool_release_ctx_internal(
 
 	/* Make a set of checks to see if the context should be scheduled out.
 	 * Note that there'll always be at least 1 reference to the context
-	 * which was previously acquired by kbasep_js_schedule_ctx(). */
+	 * which was previously acquired by kbasep_js_schedule_ctx().
+	 */
 	if (new_ref_count == 1 &&
 		(!kbasep_js_is_submit_allowed(js_devdata, kctx) ||
-							kbdev->pm.suspending)) {
+#ifdef CONFIG_MALI_ARBITER_SUPPORT
+			kbase_pm_is_gpu_lost(kbdev) ||
+#endif
+			kbase_pm_is_suspending(kbdev))) {
 		int num_slots = kbdev->gpu_props.num_job_slots;
 		int slot;
 
 		/* Last reference, and we've been told to remove this context
-		 * from the Run Pool */
+		 * from the Run Pool
+		 */
 		dev_dbg(kbdev->dev, "JS: RunPool Remove Context %p because refcount=%d, jobs=%d, allowed=%d",
 				kctx, new_ref_count, js_kctx_info->ctx.nr_jobs,
 				kbasep_js_is_submit_allowed(js_devdata, kctx));
@@ -1661,7 +1688,8 @@ static kbasep_js_release_result kbasep_js_runpool_release_ctx_internal(
 			kbasep_js_ctx_attr_runpool_release_ctx(kbdev, kctx);
 
 		/* Releasing the context and katom retained state can allow
-		 * more jobs to run */
+		 * more jobs to run
+		 */
 		release_result |=
 			kbasep_js_run_jobs_after_ctx_and_atom_release(kbdev,
 						kctx, katom_retained_state,
@@ -1701,7 +1729,8 @@ static kbasep_js_release_result kbasep_js_runpool_release_ctx_internal(
 		kbase_ctx_flag_clear(kctx, KCTX_SCHEDULED);
 		/* Signal any waiter that the context is not scheduled, so is
 		 * safe for termination - once the jsctx_mutex is also dropped,
-		 * and jobs have finished. */
+		 * and jobs have finished.
+		 */
 		wake_up(&js_kctx_info->ctx.is_scheduled_wait);
 
 		/* Queue an action to occur after we've dropped the lock */
@@ -1743,7 +1772,8 @@ void kbasep_js_runpool_requeue_or_kill_ctx(struct kbase_device *kbdev,
 
 	if (kbase_ctx_flag(kctx, KCTX_DYING)) {
 		/* Dying: don't requeue, but kill all jobs on the context. This
-		 * happens asynchronously */
+		 * happens asynchronously
+		 */
 		dev_dbg(kbdev->dev,
 			"JS: ** Killing Context %p on RunPool Remove **", kctx);
 		kbase_js_foreach_ctx_job(kctx, &kbase_jd_cancel);
@@ -1797,7 +1827,8 @@ void kbasep_js_runpool_release_ctx(struct kbase_device *kbdev,
 }
 
 /* Variant of kbasep_js_runpool_release_ctx() that doesn't call into
- * kbase_js_sched_all() */
+ * kbase_js_sched_all()
+ */
 static void kbasep_js_runpool_release_ctx_no_schedule(
 		struct kbase_device *kbdev, struct kbase_context *kctx)
 {
@@ -1866,7 +1897,8 @@ static bool kbasep_js_schedule_ctx(struct kbase_device *kbdev,
 				kbdev, kctx);
 		if (as_nr != KBASEP_AS_NR_INVALID) {
 			/* Attempt to retain the context again, this should
-			 * succeed */
+			 * succeed
+			 */
 			mutex_lock(&kbdev->mmu_hw_mutex);
 			spin_lock_irqsave(&kbdev->hwaccess_lock, flags);
 			as_nr = kbase_ctx_sched_retain_ctx(kctx);
@@ -1900,9 +1932,9 @@ static bool kbasep_js_schedule_ctx(struct kbase_device *kbdev,
 		return false;
 	}
 
-	KBASE_TRACE_ADD_REFCOUNT(kbdev, JS_TRY_SCHEDULE_HEAD_CTX, kctx, NULL,
+	KBASE_KTRACE_ADD_JM_REFCOUNT(kbdev, JS_TRY_SCHEDULE_HEAD_CTX, kctx, NULL,
 				0u,
-				kbasep_js_trace_get_refcnt(kbdev, kctx));
+				kbase_ktrace_get_ctx_refcnt(kctx));
 
 	kbase_ctx_flag_set(kctx, KCTX_SCHEDULED);
 
@@ -1925,7 +1957,8 @@ static bool kbasep_js_schedule_ctx(struct kbase_device *kbdev,
 	KBASE_TLSTREAM_TL_RET_AS_CTX(kbdev, &kbdev->as[kctx->as_nr], kctx);
 
 	/* Cause any future waiter-on-termination to wait until the context is
-	 * descheduled */
+	 * descheduled
+	 */
 	wake_up(&js_kctx_info->ctx.is_scheduled_wait);
 
 	/* Re-check for suspending: a suspend could've occurred, and all the
@@ -1938,12 +1971,17 @@ static bool kbasep_js_schedule_ctx(struct kbase_device *kbdev,
 	 * was taken (i.e. this condition doesn't execute), then the
 	 * kbasep_js_suspend() code will cleanup this context instead (by virtue
 	 * of it being called strictly after the suspend flag is set, and will
-	 * wait for this lock to drop) */
+	 * wait for this lock to drop)
+	 */
+#ifdef CONFIG_MALI_ARBITER_SUPPORT
+	if (kbase_pm_is_suspending(kbdev) || kbase_pm_is_gpu_lost(kbdev)) {
+#else
 	if (kbase_pm_is_suspending(kbdev)) {
+#endif
 		/* Cause it to leave at some later point */
 		bool retained;
 
-		retained = kbasep_js_runpool_retain_ctx_nolock(kbdev, kctx);
+		retained = kbase_ctx_sched_inc_refcount_nolock(kctx);
 		KBASE_DEBUG_ASSERT(retained);
 
 		kbasep_js_clear_submit_allowed(js_devdata, kctx);
@@ -1962,13 +2000,15 @@ static bool kbasep_js_schedule_ctx(struct kbase_device *kbdev,
 	mutex_unlock(&js_devdata->runpool_mutex);
 	mutex_unlock(&js_kctx_info->ctx.jsctx_mutex);
 	/* Note: after this point, the context could potentially get scheduled
-	 * out immediately */
+	 * out immediately
+	 */
 
 	if (kctx_suspended) {
 		/* Finishing forcing out the context due to a suspend. Use a
 		 * variant of kbasep_js_runpool_release_ctx() that doesn't
 		 * schedule a new context, to prevent a risk of recursion back
-		 * into this function */
+		 * into this function
+		 */
 		kbasep_js_runpool_release_ctx_no_schedule(kbdev, kctx);
 		return false;
 	}
@@ -2016,9 +2056,30 @@ void kbasep_js_schedule_privileged_ctx(struct kbase_device *kbdev,
 	js_devdata = &kbdev->js_data;
 	js_kctx_info = &kctx->jctx.sched_info;
 
-	/* This must never be attempted whilst suspending - i.e. it should only
-	 * happen in response to a syscall from a user-space thread */
-	BUG_ON(kbase_pm_is_suspending(kbdev));
+#ifdef CONFIG_MALI_ARBITER_SUPPORT
+	/* This should only happen in response to a system call
+	 * from a user-space thread.
+	 * In a non-arbitrated environment this can never happen
+	 * whilst suspending.
+	 *
+	 * In an arbitrated environment, user-space threads can run
+	 * while we are suspended (for example GPU not available
+	 * to this VM), however in that case we will block on
+	 * the wait event for KCTX_SCHEDULED, since no context
+	 * can be scheduled until we have the GPU again.
+	 */
+	if (kbdev->arb.arb_if == NULL)
+		if (WARN_ON(kbase_pm_is_suspending(kbdev)))
+			return;
+#else
+	/* This should only happen in response to a system call
+	 * from a user-space thread.
+	 * In a non-arbitrated environment this can never happen
+	 * whilst suspending.
+	 */
+	if (WARN_ON(kbase_pm_is_suspending(kbdev)))
+		return;
+#endif
 
 	mutex_lock(&js_devdata->queue_mutex);
 	mutex_lock(&js_kctx_info->ctx.jsctx_mutex);
@@ -2033,7 +2094,8 @@ void kbasep_js_schedule_privileged_ctx(struct kbase_device *kbdev,
 			kbase_js_sync_timers(kbdev);
 
 		/* Fast-starting requires the jsctx_mutex to be dropped,
-		 * because it works on multiple ctxs */
+		 * because it works on multiple ctxs
+		 */
 		mutex_unlock(&js_kctx_info->ctx.jsctx_mutex);
 		mutex_unlock(&js_devdata->queue_mutex);
 
@@ -2045,8 +2107,9 @@ void kbasep_js_schedule_privileged_ctx(struct kbase_device *kbdev,
 			   kbase_ctx_flag(kctx, KCTX_SCHEDULED));
 	} else {
 		/* Already scheduled in - We need to retain it to keep the
-		 * corresponding address space */
-		WARN_ON(!kbasep_js_runpool_retain_ctx(kbdev, kctx));
+		 * corresponding address space
+		 */
+		WARN_ON(!kbase_ctx_sched_inc_refcount(kctx));
 		mutex_unlock(&js_kctx_info->ctx.jsctx_mutex);
 		mutex_unlock(&js_devdata->queue_mutex);
 	}
@@ -2090,7 +2153,8 @@ void kbasep_js_suspend(struct kbase_device *kbdev)
 	js_devdata->runpool_irq.submit_allowed = 0;
 
 	/* Retain each of the contexts, so we can cause it to leave even if it
-	 * had no refcount to begin with */
+	 * had no refcount to begin with
+	 */
 	for (i = BASE_MAX_NR_AS - 1; i >= 0; --i) {
 		struct kbase_context *kctx = kbdev->as_to_kctx[i];
 
@@ -2111,7 +2175,8 @@ void kbasep_js_suspend(struct kbase_device *kbdev)
 	spin_unlock_irqrestore(&kbdev->hwaccess_lock, flags);
 
 	/* De-ref the previous retain to ensure each context gets pulled out
-	 * sometime later. */
+	 * sometime later.
+	 */
 	for (i = 0;
 		 i < BASE_MAX_NR_AS;
 		 ++i, retained = retained >> 1) {
@@ -2122,7 +2187,8 @@ void kbasep_js_suspend(struct kbase_device *kbdev)
 	}
 
 	/* Caller must wait for all Power Manager active references to be
-	 * dropped */
+	 * dropped
+	 */
 }
 
 void kbasep_js_resume(struct kbase_device *kbdev)
@@ -2136,11 +2202,12 @@ void kbasep_js_resume(struct kbase_device *kbdev)
 
 	mutex_lock(&js_devdata->queue_mutex);
 	for (js = 0; js < kbdev->gpu_props.num_job_slots; js++) {
-		for (prio = BASE_JD_PRIO_MEDIUM;
+		for (prio = KBASE_JS_ATOM_SCHED_PRIO_REALTIME;
 			prio < KBASE_JS_ATOM_SCHED_PRIO_COUNT; prio++) {
 			struct kbase_context *kctx, *n;
 			unsigned long flags;
 
+#ifndef CONFIG_MALI_ARBITER_SUPPORT
 			spin_lock_irqsave(&kbdev->hwaccess_lock, flags);
 
 			list_for_each_entry_safe(kctx, n,
@@ -2164,9 +2231,13 @@ void kbasep_js_resume(struct kbase_device *kbdev)
 					timer_sync =
 						kbase_js_ctx_list_add_pullable_nolock(
 								kbdev, kctx, js);
-				spin_unlock_irqrestore(&kbdev->hwaccess_lock, flags);
+
+				spin_unlock_irqrestore(&kbdev->hwaccess_lock,
+						flags);
+
 				if (timer_sync)
 					kbase_backend_ctx_count_changed(kbdev);
+
 				mutex_unlock(&js_devdata->runpool_mutex);
 				mutex_unlock(&js_kctx_info->ctx.jsctx_mutex);
 
@@ -2174,6 +2245,30 @@ void kbasep_js_resume(struct kbase_device *kbdev)
 				spin_lock_irqsave(&kbdev->hwaccess_lock, flags);
 			}
 			spin_unlock_irqrestore(&kbdev->hwaccess_lock, flags);
+#else
+			bool timer_sync = false;
+
+			spin_lock_irqsave(&kbdev->hwaccess_lock, flags);
+
+			list_for_each_entry_safe(kctx, n,
+				 &kbdev->js_data.ctx_list_unpullable[js][prio],
+				 jctx.sched_info.ctx.ctx_list_entry[js]) {
+
+				if (!kbase_ctx_flag(kctx, KCTX_SCHEDULED) &&
+					kbase_js_ctx_pullable(kctx, js, false))
+					timer_sync |=
+						kbase_js_ctx_list_add_pullable_nolock(
+							kbdev, kctx, js);
+			}
+
+			spin_unlock_irqrestore(&kbdev->hwaccess_lock, flags);
+
+			if (timer_sync) {
+				mutex_lock(&js_devdata->runpool_mutex);
+				kbase_backend_ctx_count_changed(kbdev);
+				mutex_unlock(&js_devdata->runpool_mutex);
+			}
+#endif
 		}
 	}
 	mutex_unlock(&js_devdata->queue_mutex);
@@ -2228,7 +2323,8 @@ bool kbase_js_dep_resolved_submit(struct kbase_context *kctx,
 	lockdep_assert_held(&kctx->jctx.lock);
 
 	/* If slot will transition from unpullable to pullable then add to
-	 * pullable list */
+	 * pullable list
+	 */
 	if (jsctx_rb_none_to_pull(kctx, katom->slot_nr)) {
 		enqueue_required = true;
 	} else {
@@ -2354,6 +2450,8 @@ static void kbase_js_evict_deps(struct kbase_context *kctx,
 				KBASE_KATOM_FLAG_JSCTX_IN_X_DEP_LIST))) {
 		/* Remove dependency.*/
 		x_dep->atom_flags &= ~KBASE_KATOM_FLAG_X_DEP_BLOCKED;
+		trace_sysgraph(SGR_DEP_RES, kctx->id,
+				kbase_jd_atom_id(kctx, x_dep));
 
 		dev_dbg(kctx->kbdev->dev, "Cleared X_DEP flag on atom %p\n",
 			(void *)x_dep);
@@ -2388,7 +2486,11 @@ struct kbase_jd_atom *kbase_js_pull(struct kbase_context *kctx, int js)
 			(void *)kctx);
 		return NULL;
 	}
+#ifdef CONFIG_MALI_ARBITER_SUPPORT
+	if (kbase_pm_is_suspending(kbdev) || kbase_pm_is_gpu_lost(kbdev))
+#else
 	if (kbase_pm_is_suspending(kbdev))
+#endif
 		return NULL;
 
 	katom = jsctx_rb_peek(kctx, js);
@@ -2411,7 +2513,8 @@ struct kbase_jd_atom *kbase_js_pull(struct kbase_context *kctx, int js)
 
 	/* Due to ordering restrictions when unpulling atoms on failure, we do
 	 * not allow multiple runs of fail-dep atoms from the same context to be
-	 * present on the same slot */
+	 * present on the same slot
+	 */
 	if (katom->pre_dep && atomic_read(&kctx->atoms_pulled_slot[js])) {
 		struct kbase_jd_atom *prev_atom =
 				kbase_backend_inspect_tail(kbdev, js);
@@ -2451,7 +2554,7 @@ struct kbase_jd_atom *kbase_js_pull(struct kbase_context *kctx, int js)
 	kctx->atoms_pulled_slot_pri[katom->slot_nr][katom->sched_priority]++;
 	jsctx_rb_pull(kctx, katom);
 
-	kbasep_js_runpool_retain_ctx_nolock(kbdev, kctx);
+	kbase_ctx_sched_retain_ctx_refcount(kctx);
 
 	katom->atom_flags |= KBASE_KATOM_FLAG_HOLDING_CTX_REF;
 
@@ -2490,9 +2593,9 @@ static void js_return_of_start_rp(struct kbase_jd_atom *const start_katom)
 	if (WARN_ON(!(start_katom->core_req & BASE_JD_REQ_START_RENDERPASS)))
 		return;
 
-	if (WARN_ON(start_katom->renderpass_id >=
-		ARRAY_SIZE(kctx->jctx.renderpasses)))
-		return;
+	compiletime_assert((1ull << (sizeof(start_katom->renderpass_id) * 8)) <=
+			ARRAY_SIZE(kctx->jctx.renderpasses),
+			"Should check invalid access to renderpasses");
 
 	rp = &kctx->jctx.renderpasses[start_katom->renderpass_id];
 
@@ -2599,9 +2702,9 @@ static void js_return_of_end_rp(struct kbase_jd_atom *const end_katom)
 	if (WARN_ON(!(end_katom->core_req & BASE_JD_REQ_END_RENDERPASS)))
 		return;
 
-	if (WARN_ON(end_katom->renderpass_id >=
-		ARRAY_SIZE(kctx->jctx.renderpasses)))
-		return;
+	compiletime_assert((1ull << (sizeof(end_katom->renderpass_id) * 8)) <=
+			ARRAY_SIZE(kctx->jctx.renderpasses),
+			"Should check invalid access to renderpasses");
 
 	rp = &kctx->jctx.renderpasses[end_katom->renderpass_id];
 
@@ -2710,13 +2813,15 @@ static void js_return_worker(struct work_struct *data)
 		timer_sync |= kbase_js_ctx_list_remove_nolock(kbdev, kctx, js);
 
 	/* If this slot has been blocked due to soft-stopped atoms, and all
-	 * atoms have now been processed, then unblock the slot */
+	 * atoms have now been processed, then unblock the slot
+	 */
 	if (!kctx->atoms_pulled_slot_pri[js][prio] &&
 			kctx->blocked_js[js][prio]) {
 		kctx->blocked_js[js][prio] = false;
 
 		/* Only mark the slot as pullable if the context is not idle -
-		 * that case is handled below */
+		 * that case is handled below
+		 */
 		if (atomic_read(&kctx->atoms_pulled) &&
 				kbase_js_ctx_pullable(kctx, js, true))
 			timer_sync |= kbase_js_ctx_list_add_pullable_nolock(
@@ -2856,9 +2961,9 @@ static bool js_complete_start_rp(struct kbase_context *kctx,
 	if (WARN_ON(!(start_katom->core_req & BASE_JD_REQ_START_RENDERPASS)))
 		return false;
 
-	if (WARN_ON(start_katom->renderpass_id >=
-		ARRAY_SIZE(kctx->jctx.renderpasses)))
-		return false;
+	compiletime_assert((1ull << (sizeof(start_katom->renderpass_id) * 8)) <=
+			ARRAY_SIZE(kctx->jctx.renderpasses),
+			"Should check invalid access to renderpasses");
 
 	rp = &kctx->jctx.renderpasses[start_katom->renderpass_id];
 
@@ -2952,9 +3057,9 @@ static void js_complete_end_rp(struct kbase_context *kctx,
 	if (WARN_ON(!(end_katom->core_req & BASE_JD_REQ_END_RENDERPASS)))
 		return;
 
-	if (WARN_ON(end_katom->renderpass_id >=
-			ARRAY_SIZE(kctx->jctx.renderpasses)))
-		return;
+	compiletime_assert((1ull << (sizeof(end_katom->renderpass_id) * 8)) <=
+			ARRAY_SIZE(kctx->jctx.renderpasses),
+			"Should check invalid access to renderpasses");
 
 	rp = &kctx->jctx.renderpasses[end_katom->renderpass_id];
 
@@ -3030,7 +3135,8 @@ bool kbase_js_complete_atom_wq(struct kbase_context *kctx,
 		}
 
 		/* If this slot has been blocked due to soft-stopped atoms, and
-		 * all atoms have now been processed, then unblock the slot */
+		 * all atoms have now been processed, then unblock the slot
+		 */
 		if (!kctx->atoms_pulled_slot_pri[atom_slot][prio]
 				&& kctx->blocked_js[atom_slot][prio]) {
 			dev_dbg(kbdev->dev,
@@ -3129,9 +3235,9 @@ static bool js_end_rp_is_complete(struct kbase_jd_atom *const end_katom)
 	if (WARN_ON(!(end_katom->core_req & BASE_JD_REQ_END_RENDERPASS)))
 		return true;
 
-	if (WARN_ON(end_katom->renderpass_id >=
-		ARRAY_SIZE(kctx->jctx.renderpasses)))
-		return true;
+	compiletime_assert((1ull << (sizeof(end_katom->renderpass_id) * 8)) <=
+			ARRAY_SIZE(kctx->jctx.renderpasses),
+			"Should check invalid access to renderpasses");
 
 	rp = &kctx->jctx.renderpasses[end_katom->renderpass_id];
 
@@ -3194,6 +3300,9 @@ struct kbase_jd_atom *kbase_js_complete_atom(struct kbase_jd_atom *katom,
 	KBASE_TLSTREAM_AUX_EVENT_JOB_SLOT(kbdev, NULL,
 		katom->slot_nr, 0, TL_JS_EVENT_STOP);
 
+	trace_sysgraph_gpu(SGR_COMPLETE, kctx->id,
+			kbase_jd_atom_id(katom->kctx, katom), katom->slot_nr);
+
 	kbase_jd_done(katom, katom->slot_nr, end_timestamp, 0);
 
 	/* Unblock cross dependency if present */
@@ -3203,7 +3312,8 @@ struct kbase_jd_atom *kbase_js_complete_atom(struct kbase_jd_atom *katom,
 		bool was_pullable = kbase_js_ctx_pullable(kctx, x_dep->slot_nr,
 				false);
 		x_dep->atom_flags &= ~KBASE_KATOM_FLAG_X_DEP_BLOCKED;
-
+		trace_sysgraph(SGR_DEP_RES, kctx->id,
+				kbase_jd_atom_id(katom->kctx, x_dep));
 		dev_dbg(kbdev->dev, "Cleared X_DEP flag on atom %p\n",
 			(void *)x_dep);
 
@@ -3263,9 +3373,9 @@ bool kbase_js_atom_blocked_on_x_dep(struct kbase_jd_atom *const katom)
 		return true;
 	}
 
-	if (WARN_ON(katom->renderpass_id >=
-		ARRAY_SIZE(kctx->jctx.renderpasses)))
-		return true;
+	compiletime_assert((1ull << (sizeof(katom->renderpass_id) * 8)) <=
+			ARRAY_SIZE(kctx->jctx.renderpasses),
+			"Should check invalid access to renderpasses");
 
 	rp = &kctx->jctx.renderpasses[katom->renderpass_id];
 	/* We can read a subset of renderpass state without holding
@@ -3347,7 +3457,8 @@ void kbase_js_sched(struct kbase_device *kbdev, int js_mask)
 					dev_dbg(kbdev->dev,
 						"Suspend pending (s:%d)\n", js);
 					/* Suspend pending - return context to
-					 * queue and stop scheduling */
+					 * queue and stop scheduling
+					 */
 					mutex_lock(
 					&kctx->jctx.sched_info.ctx.jsctx_mutex);
 					if (kbase_js_ctx_list_add_pullable_head(
@@ -3399,11 +3510,12 @@ void kbase_js_sched(struct kbase_device *kbdev, int js_mask)
 
 			kbase_ctx_flag_clear(kctx, KCTX_PULLED);
 
-			if (!kbase_jm_kick(kbdev, 1 << js))
+			if (!kbase_jm_kick(kbdev, 1 << js)) {
 				dev_dbg(kbdev->dev,
 					"No more jobs can be submitted (s:%d)\n",
 					js);
 				js_mask &= ~(1 << js);
+			}
 			if (!kbase_ctx_flag(kctx, KCTX_PULLED)) {
 				bool pullable;
 
@@ -3417,7 +3529,8 @@ void kbase_js_sched(struct kbase_device *kbdev, int js_mask)
 				/* Failed to pull jobs - push to head of list.
 				 * Unless this context is already 'active', in
 				 * which case it's effectively already scheduled
-				 * so push it to the back of the list. */
+				 * so push it to the back of the list.
+				 */
 				if (pullable && kctx == last_active[js] &&
 						kbase_ctx_flag(kctx,
 						(KCTX_PULLED_SINCE_ACTIVE_JS0 <<
@@ -3442,7 +3555,8 @@ void kbase_js_sched(struct kbase_device *kbdev, int js_mask)
 				 * slot, then we need to remove the active
 				 * marker to prevent it from submitting atoms in
 				 * the IRQ handler, which would prevent this
-				 * context from making progress. */
+				 * context from making progress.
+				 */
 				if (last_active[js] && kctx != last_active[js]
 						&& kbase_js_ctx_pullable(
 						last_active[js], js, true))
@@ -3514,7 +3628,8 @@ void kbase_js_zap_context(struct kbase_context *kctx)
 
 	/* First, atomically do the following:
 	 * - mark the context as dying
-	 * - try to evict it from the queue */
+	 * - try to evict it from the queue
+	 */
 	mutex_lock(&kctx->jctx.lock);
 	mutex_lock(&js_devdata->queue_mutex);
 	mutex_lock(&js_kctx_info->ctx.jsctx_mutex);
@@ -3582,16 +3697,16 @@ void kbase_js_zap_context(struct kbase_context *kctx)
 		 *           back (this already cancels the jobs)
 		 */
 
-		KBASE_TRACE_ADD(kbdev, JM_ZAP_NON_SCHEDULED, kctx, NULL, 0u,
-						kbase_ctx_flag(kctx, KCTX_SCHEDULED));
+		KBASE_KTRACE_ADD_JM(kbdev, JM_ZAP_NON_SCHEDULED, kctx, NULL, 0u, kbase_ctx_flag(kctx, KCTX_SCHEDULED));
 
 		dev_dbg(kbdev->dev, "Zap: Ctx %p scheduled=0", kctx);
 
 		/* Only cancel jobs when we evicted from the
 		 * queue. No Power Manager active reference was held.
 		 *
-		 * Having is_dying set ensures that this kills, and
-		 * doesn't requeue */
+		 * Having is_dying set ensures that this kills, and doesn't
+		 * requeue
+		 */
 		kbasep_js_runpool_requeue_or_kill_ctx(kbdev, kctx, false);
 
 		mutex_unlock(&js_kctx_info->ctx.jsctx_mutex);
@@ -3602,9 +3717,9 @@ void kbase_js_zap_context(struct kbase_context *kctx)
 		bool was_retained;
 
 		/* Case c: didn't evict, but it is scheduled - it's in the Run
-		 * Pool */
-		KBASE_TRACE_ADD(kbdev, JM_ZAP_SCHEDULED, kctx, NULL, 0u,
-						kbase_ctx_flag(kctx, KCTX_SCHEDULED));
+		 * Pool
+		 */
+		KBASE_KTRACE_ADD_JM(kbdev, JM_ZAP_SCHEDULED, kctx, NULL, 0u, kbase_ctx_flag(kctx, KCTX_SCHEDULED));
 		dev_dbg(kbdev->dev, "Zap: Ctx %p is in RunPool", kctx);
 
 		/* Disable the ctx from submitting any more jobs */
@@ -3614,18 +3729,21 @@ void kbase_js_zap_context(struct kbase_context *kctx)
 
 		/* Retain and (later) release the context whilst it is is now
 		 * disallowed from submitting jobs - ensures that someone
-		 * somewhere will be removing the context later on */
-		was_retained = kbasep_js_runpool_retain_ctx_nolock(kbdev, kctx);
+		 * somewhere will be removing the context later on
+		 */
+		was_retained = kbase_ctx_sched_inc_refcount_nolock(kctx);
 
 		/* Since it's scheduled and we have the jsctx_mutex, it must be
-		 * retained successfully */
+		 * retained successfully
+		 */
 		KBASE_DEBUG_ASSERT(was_retained);
 
 		dev_dbg(kbdev->dev, "Zap: Ctx %p Kill Any Running jobs", kctx);
 
 		/* Cancel any remaining running jobs for this kctx - if any.
 		 * Submit is disallowed which takes effect immediately, so no
-		 * more new jobs will appear after we do this. */
+		 * more new jobs will appear after we do this.
+		 */
 		kbase_backend_jm_kill_running_jobs_from_kctx(kctx);
 
 		spin_unlock_irqrestore(&kbdev->hwaccess_lock, flags);
@@ -3639,7 +3757,7 @@ void kbase_js_zap_context(struct kbase_context *kctx)
 		kbasep_js_runpool_release_ctx(kbdev, kctx);
 	}
 
-	KBASE_TRACE_ADD(kbdev, JM_ZAP_DONE, kctx, NULL, 0u, 0u);
+	KBASE_KTRACE_ADD_JM(kbdev, JM_ZAP_DONE, kctx, NULL, 0u, 0u);
 
 	/* After this, you must wait on both the
 	 * kbase_jd_context::zero_jobs_wait and the
@@ -3647,7 +3765,8 @@ void kbase_js_zap_context(struct kbase_context *kctx)
 	 * to be destroyed, and the context to be de-scheduled (if it was on the
 	 * runpool).
 	 *
-	 * kbase_jd_zap_context() will do this. */
+	 * kbase_jd_zap_context() will do this.
+	 */
 }
 
 static inline int trace_get_refcnt(struct kbase_device *kbdev,
@@ -3685,7 +3804,7 @@ static void kbase_js_foreach_ctx_job(struct kbase_context *kctx,
 
 	spin_lock_irqsave(&kbdev->hwaccess_lock, flags);
 
-	KBASE_TRACE_ADD_REFCOUNT(kbdev, JS_POLICY_FOREACH_CTX_JOBS, kctx, NULL,
+	KBASE_KTRACE_ADD_JM_REFCOUNT(kbdev, JS_POLICY_FOREACH_CTX_JOBS, kctx, NULL,
 					0u, trace_get_refcnt(kbdev, kctx));
 
 	/* Invoke callback on jobs on each slot in turn */
@@ -3695,80 +3814,17 @@ static void kbase_js_foreach_ctx_job(struct kbase_context *kctx,
 	spin_unlock_irqrestore(&kbdev->hwaccess_lock, flags);
 }
 
-
-/* Hold the mmu_hw_mutex and hwaccess_lock for this */
-bool kbasep_js_runpool_retain_ctx_nolock(struct kbase_device *kbdev,
-		struct kbase_context *kctx)
+base_jd_prio kbase_js_priority_check(struct kbase_device *kbdev, base_jd_prio priority)
 {
-	bool result = false;
-	int as_nr;
+	struct priority_control_manager_device *pcm_device = kbdev->pcm_dev;
+	int req_priority, out_priority;
+	base_jd_prio out_jd_priority = priority;
 
-	if (WARN_ON(kbdev == NULL))
-		return result;
-
-	if (WARN_ON(kctx == NULL))
-		return result;
-
-	lockdep_assert_held(&kbdev->hwaccess_lock);
-
-	as_nr = kctx->as_nr;
-	if (atomic_read(&kctx->refcount) > 0) {
-		KBASE_DEBUG_ASSERT(as_nr >= 0);
-
-		kbase_ctx_sched_retain_ctx_refcount(kctx);
-		KBASE_TRACE_ADD_REFCOUNT(kbdev, JS_RETAIN_CTX_NOLOCK, kctx,
-				NULL, 0u, atomic_read(&kctx->refcount));
-		result = true;
+	if (pcm_device)	{
+		req_priority = kbasep_js_atom_prio_to_sched_prio(priority);
+		out_priority = pcm_device->ops.pcm_scheduler_priority_check(pcm_device, current, req_priority);
+		out_jd_priority = kbasep_js_sched_prio_to_atom_prio(out_priority);
 	}
-
-	return result;
+	return out_jd_priority;
 }
 
-
-bool kbasep_js_runpool_retain_ctx(struct kbase_device *kbdev,
-		struct kbase_context *kctx)
-{
-	unsigned long flags;
-	bool result = false;
-
-	if (WARN_ON(kbdev == NULL))
-		return result;
-
-	if (WARN_ON(kctx == NULL))
-		return result;
-
-	mutex_lock(&kbdev->mmu_hw_mutex);
-	spin_lock_irqsave(&kbdev->hwaccess_lock, flags);
-	result = kbasep_js_runpool_retain_ctx_nolock(kbdev, kctx);
-	spin_unlock_irqrestore(&kbdev->hwaccess_lock, flags);
-	mutex_unlock(&kbdev->mmu_hw_mutex);
-
-	return result;
-}
-
-struct kbase_context *kbasep_js_runpool_lookup_ctx(struct kbase_device *kbdev,
-	int as_nr)
-{
-	unsigned long flags;
-	struct kbase_context *found_kctx = NULL;
-
-	if (WARN_ON(kbdev == NULL))
-		return NULL;
-
-	if (WARN_ON(as_nr < 0))
-		return NULL;
-
-	if (WARN_ON(as_nr >= BASE_MAX_NR_AS))
-		return NULL;
-
-	spin_lock_irqsave(&kbdev->hwaccess_lock, flags);
-
-	found_kctx = kbdev->as_to_kctx[as_nr];
-
-	if (found_kctx != NULL)
-		kbase_ctx_sched_retain_ctx_refcount(found_kctx);
-
-	spin_unlock_irqrestore(&kbdev->hwaccess_lock, flags);
-
-	return found_kctx;
-}

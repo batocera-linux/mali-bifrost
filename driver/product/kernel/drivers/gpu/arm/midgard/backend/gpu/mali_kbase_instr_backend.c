@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  *
  * (C) COPYRIGHT 2014-2020 ARM Limited. All rights reserved.
@@ -20,8 +21,6 @@
  *
  */
 
-
-
 /*
  * GPU backend instrumentation APIs.
  */
@@ -29,7 +28,7 @@
 #include <mali_kbase.h>
 #include <gpu/mali_kbase_gpu_regmap.h>
 #include <mali_kbase_hwaccess_instr.h>
-#include <backend/gpu/mali_kbase_device_internal.h>
+#include <device/mali_kbase_device.h>
 #include <backend/gpu/mali_kbase_instr_internal.h>
 
 
@@ -71,12 +70,12 @@ int kbase_instr_hwcnt_enable_internal(struct kbase_device *kbdev,
 
 	/* Configure */
 	prfcnt_config = kctx->as_nr << PRFCNT_CONFIG_AS_SHIFT;
-#ifdef CONFIG_MALI_PRFCNT_SET_SECONDARY_VIA_DEBUG_FS
-	if (kbdev->hwcnt.backend.use_secondary_override)
+#ifdef CONFIG_MALI_PRFCNT_SET_SELECT_VIA_DEBUG_FS
+	prfcnt_config |= kbdev->hwcnt.backend.override_counter_set
+			 << PRFCNT_CONFIG_SETSELECT_SHIFT;
 #else
-	if (enable->use_secondary)
+	prfcnt_config |= enable->counter_set << PRFCNT_CONFIG_SETSELECT_SHIFT;
 #endif
-		prfcnt_config |= 1 << PRFCNT_CONFIG_SETSELECT_SHIFT;
 
 	kbase_reg_write(kbdev, GPU_CONTROL_REG(PRFCNT_CONFIG),
 			prfcnt_config | PRFCNT_CONFIG_MODE_OFF);
@@ -87,7 +86,7 @@ int kbase_instr_hwcnt_enable_internal(struct kbase_device *kbdev,
 					enable->dump_buffer >> 32);
 
 	kbase_reg_write(kbdev, GPU_CONTROL_REG(PRFCNT_JM_EN),
-					enable->jm_bm);
+					enable->fe_bm);
 
 	kbase_reg_write(kbdev, GPU_CONTROL_REG(PRFCNT_SHADER_EN),
 					enable->shader_bm);
@@ -174,7 +173,6 @@ int kbase_instr_hwcnt_disable_internal(struct kbase_context *kctx)
 									kctx);
 
 	err = 0;
-
  out:
 	return err;
 }
@@ -194,7 +192,8 @@ int kbase_instr_hwcnt_request_dump(struct kbase_context *kctx)
 
 	if (kbdev->hwcnt.backend.state != KBASE_INSTR_STATE_IDLE) {
 		/* HW counters are disabled or another dump is ongoing, or we're
-		 * resetting */
+		 * resetting
+		 */
 		goto unlock;
 	}
 
@@ -204,7 +203,6 @@ int kbase_instr_hwcnt_request_dump(struct kbase_context *kctx)
 	 */
 	kbdev->hwcnt.backend.state = KBASE_INSTR_STATE_DUMPING;
 
-
 	/* Reconfigure the dump address */
 	kbase_reg_write(kbdev, GPU_CONTROL_REG(PRFCNT_BASE_LO),
 					kbdev->hwcnt.addr & 0xFFFFFFFF);
@@ -212,8 +210,8 @@ int kbase_instr_hwcnt_request_dump(struct kbase_context *kctx)
 					kbdev->hwcnt.addr >> 32);
 
 	/* Start dumping */
-	KBASE_TRACE_ADD(kbdev, CORE_GPU_PRFCNT_SAMPLE, NULL, NULL,
-					kbdev->hwcnt.addr, 0);
+	KBASE_KTRACE_ADD(kbdev, CORE_GPU_PRFCNT_SAMPLE, NULL,
+			kbdev->hwcnt.addr);
 
 	kbase_reg_write(kbdev, GPU_CONTROL_REG(GPU_COMMAND),
 					GPU_COMMAND_PRFCNT_SAMPLE);
@@ -224,7 +222,6 @@ int kbase_instr_hwcnt_request_dump(struct kbase_context *kctx)
 
  unlock:
 	spin_unlock_irqrestore(&kbdev->hwcnt.lock, flags);
-
 
 	return err;
 }
@@ -254,40 +251,6 @@ bool kbase_instr_hwcnt_dump_complete(struct kbase_context *kctx,
 }
 KBASE_EXPORT_SYMBOL(kbase_instr_hwcnt_dump_complete);
 
-void kbasep_cache_clean_worker(struct work_struct *data)
-{
-	struct kbase_device *kbdev;
-	unsigned long flags, pm_flags;
-
-	kbdev = container_of(data, struct kbase_device,
-						hwcnt.backend.cache_clean_work);
-
-	spin_lock_irqsave(&kbdev->hwaccess_lock, pm_flags);
-	spin_lock_irqsave(&kbdev->hwcnt.lock, flags);
-
-	/* Clean and invalidate the caches so we're sure the mmu tables for the
-	 * dump buffer is valid.
-	 */
-	KBASE_DEBUG_ASSERT(kbdev->hwcnt.backend.state ==
-					KBASE_INSTR_STATE_REQUEST_CLEAN);
-	kbase_gpu_start_cache_clean_nolock(kbdev);
-	spin_unlock_irqrestore(&kbdev->hwcnt.lock, flags);
-	spin_unlock_irqrestore(&kbdev->hwaccess_lock, pm_flags);
-
-	kbase_gpu_wait_cache_clean(kbdev);
-
-	spin_lock_irqsave(&kbdev->hwcnt.lock, flags);
-	KBASE_DEBUG_ASSERT(kbdev->hwcnt.backend.state ==
-					KBASE_INSTR_STATE_REQUEST_CLEAN);
-	/* All finished and idle */
-	kbdev->hwcnt.backend.state = KBASE_INSTR_STATE_IDLE;
-	kbdev->hwcnt.backend.triggered = 1;
-	wake_up(&kbdev->hwcnt.backend.wait);
-
-	spin_unlock_irqrestore(&kbdev->hwcnt.lock, flags);
-}
-
-
 void kbase_instr_hwcnt_sample_done(struct kbase_device *kbdev)
 {
 	unsigned long flags;
@@ -298,20 +261,10 @@ void kbase_instr_hwcnt_sample_done(struct kbase_device *kbdev)
 		kbdev->hwcnt.backend.triggered = 1;
 		wake_up(&kbdev->hwcnt.backend.wait);
 	} else if (kbdev->hwcnt.backend.state == KBASE_INSTR_STATE_DUMPING) {
-		if (kbdev->mmu_mode->flags & KBASE_MMU_MODE_HAS_NON_CACHEABLE) {
-			/* All finished and idle */
-			kbdev->hwcnt.backend.state = KBASE_INSTR_STATE_IDLE;
-			kbdev->hwcnt.backend.triggered = 1;
-			wake_up(&kbdev->hwcnt.backend.wait);
-		} else {
-			int ret;
-			/* Always clean and invalidate the cache after a successful dump
-			 */
-			kbdev->hwcnt.backend.state = KBASE_INSTR_STATE_REQUEST_CLEAN;
-			ret = queue_work(kbdev->hwcnt.backend.cache_clean_wq,
-						&kbdev->hwcnt.backend.cache_clean_work);
-			KBASE_DEBUG_ASSERT(ret);
-		}
+		/* All finished and idle */
+		kbdev->hwcnt.backend.state = KBASE_INSTR_STATE_IDLE;
+		kbdev->hwcnt.backend.triggered = 1;
+		wake_up(&kbdev->hwcnt.backend.wait);
 	}
 
 	spin_unlock_irqrestore(&kbdev->hwcnt.lock, flags);
@@ -353,13 +306,14 @@ int kbase_instr_hwcnt_clear(struct kbase_context *kctx)
 	spin_lock_irqsave(&kbdev->hwcnt.lock, flags);
 
 	/* Check it's the context previously set up and we're not already
-	 * dumping */
+	 * dumping
+	 */
 	if (kbdev->hwcnt.kctx != kctx || kbdev->hwcnt.backend.state !=
 							KBASE_INSTR_STATE_IDLE)
 		goto out;
 
 	/* Clear the counters */
-	KBASE_TRACE_ADD(kbdev, CORE_GPU_PRFCNT_CLEAR, NULL, NULL, 0u, 0);
+	KBASE_KTRACE_ADD(kbdev, CORE_GPU_PRFCNT_CLEAR, NULL, 0);
 	kbase_reg_write(kbdev, GPU_CONTROL_REG(GPU_COMMAND),
 						GPU_COMMAND_PRFCNT_CLEAR);
 
@@ -378,34 +332,40 @@ int kbase_instr_backend_init(struct kbase_device *kbdev)
 	kbdev->hwcnt.backend.state = KBASE_INSTR_STATE_DISABLED;
 
 	init_waitqueue_head(&kbdev->hwcnt.backend.wait);
-	INIT_WORK(&kbdev->hwcnt.backend.cache_clean_work,
-						kbasep_cache_clean_worker);
-
 
 	kbdev->hwcnt.backend.triggered = 0;
 
-#ifdef CONFIG_MALI_PRFCNT_SET_SECONDARY_VIA_DEBUG_FS
-	kbdev->hwcnt.backend.use_secondary_override = false;
+#ifdef CONFIG_MALI_PRFCNT_SET_SELECT_VIA_DEBUG_FS
+/* Use the build time option for the override default. */
+#if defined(CONFIG_MALI_PRFCNT_SET_SECONDARY)
+	kbdev->hwcnt.backend.override_counter_set = KBASE_HWCNT_SET_SECONDARY;
+#elif defined(CONFIG_MALI_PRFCNT_SET_TERTIARY)
+	kbdev->hwcnt.backend.override_counter_set = KBASE_HWCNT_SET_TERTIARY;
+#else
+	/* Default to primary */
+	kbdev->hwcnt.backend.override_counter_set = KBASE_HWCNT_SET_PRIMARY;
 #endif
-
-	kbdev->hwcnt.backend.cache_clean_wq =
-			alloc_workqueue("Mali cache cleaning workqueue", 0, 1);
-	if (NULL == kbdev->hwcnt.backend.cache_clean_wq)
-		ret = -EINVAL;
-
+#endif
 	return ret;
 }
 
 void kbase_instr_backend_term(struct kbase_device *kbdev)
 {
-	destroy_workqueue(kbdev->hwcnt.backend.cache_clean_wq);
+	(void)kbdev;
 }
 
-#ifdef CONFIG_MALI_PRFCNT_SET_SECONDARY_VIA_DEBUG_FS
+#ifdef CONFIG_MALI_PRFCNT_SET_SELECT_VIA_DEBUG_FS
 void kbase_instr_backend_debugfs_init(struct kbase_device *kbdev)
 {
-	debugfs_create_bool("hwcnt_use_secondary", S_IRUGO | S_IWUSR,
-		kbdev->mali_debugfs_directory,
-		&kbdev->hwcnt.backend.use_secondary_override);
+	/* No validation is done on the debugfs input. Invalid input could cause
+	 * performance counter errors. This is acceptable since this is a debug
+	 * only feature and users should know what they are doing.
+	 *
+	 * Valid inputs are the values accepted bythe SET_SELECT bits of the
+	 * PRFCNT_CONFIG register as defined in the architecture specification.
+	*/
+	debugfs_create_u8("hwcnt_set_select", S_IRUGO | S_IWUSR,
+			  kbdev->mali_debugfs_directory,
+			  (u8 *)&kbdev->hwcnt.backend.override_counter_set);
 }
 #endif

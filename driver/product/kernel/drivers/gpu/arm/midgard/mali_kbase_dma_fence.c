@@ -1,6 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  *
- * (C) COPYRIGHT 2011-2017,2020 ARM Limited. All rights reserved.
+ * (C) COPYRIGHT 2011-2016, 2020 ARM Limited. All rights reserved.
  *
  * This program is free software and is provided to you under the terms of the
  * GNU General Public License version 2 as published by the Free Software
@@ -20,12 +21,10 @@
  *
  */
 
-
 /* Include mali_kbase_dma_fence.h before checking for CONFIG_MALI_DMA_FENCE as
  * it will be set there.
  */
 #include "mali_kbase_dma_fence.h"
-
 #include <linux/atomic.h>
 #include <linux/list.h>
 #include <linux/lockdep.h>
@@ -35,7 +34,6 @@
 #include <linux/spinlock.h>
 #include <linux/workqueue.h>
 #include <linux/ww_mutex.h>
-
 #include <mali_kbase.h>
 
 static void
@@ -59,7 +57,11 @@ static int
 kbase_dma_fence_lock_reservations(struct kbase_dma_fence_resv_info *info,
 				  struct ww_acquire_ctx *ctx)
 {
+#if (KERNEL_VERSION(5, 4, 0) > LINUX_VERSION_CODE)
 	struct reservation_object *content_res = NULL;
+#else
+	struct dma_resv *content_res = NULL;
+#endif
 	unsigned int content_res_idx = 0;
 	unsigned int r;
 	int err = 0;
@@ -205,7 +207,7 @@ out:
 }
 
 static void
-#if (LINUX_VERSION_CODE < KERNEL_VERSION(4, 10, 0))
+#if (KERNEL_VERSION(4, 10, 0) > LINUX_VERSION_CODE)
 kbase_dma_fence_cb(struct fence *fence, struct fence_cb *cb)
 #else
 kbase_dma_fence_cb(struct dma_fence *fence, struct dma_fence_cb *cb)
@@ -225,12 +227,19 @@ kbase_dma_fence_cb(struct dma_fence *fence, struct dma_fence_cb *cb)
 		kbase_dma_fence_queue_work(katom);
 }
 
+#if (KERNEL_VERSION(5, 4, 0) > LINUX_VERSION_CODE)
 static int
 kbase_dma_fence_add_reservation_callback(struct kbase_jd_atom *katom,
 					 struct reservation_object *resv,
 					 bool exclusive)
+#else
+static int
+kbase_dma_fence_add_reservation_callback(struct kbase_jd_atom *katom,
+					 struct dma_resv *resv,
+					 bool exclusive)
+#endif
 {
-#if (LINUX_VERSION_CODE < KERNEL_VERSION(4, 10, 0))
+#if (KERNEL_VERSION(4, 10, 0) > LINUX_VERSION_CODE)
 	struct fence *excl_fence = NULL;
 	struct fence **shared_fences = NULL;
 #else
@@ -294,9 +303,15 @@ out:
 	return err;
 }
 
+#if (KERNEL_VERSION(5, 4, 0) > LINUX_VERSION_CODE)
 void kbase_dma_fence_add_reservation(struct reservation_object *resv,
 				     struct kbase_dma_fence_resv_info *info,
 				     bool exclusive)
+#else
+void kbase_dma_fence_add_reservation(struct dma_resv *resv,
+				     struct kbase_dma_fence_resv_info *info,
+				     bool exclusive)
+#endif
 {
 	unsigned int i;
 
@@ -317,7 +332,7 @@ int kbase_dma_fence_wait(struct kbase_jd_atom *katom,
 			 struct kbase_dma_fence_resv_info *info)
 {
 	int err, i;
-#if (LINUX_VERSION_CODE < KERNEL_VERSION(4, 10, 0))
+#if (KERNEL_VERSION(4, 10, 0) > LINUX_VERSION_CODE)
 	struct fence *fence;
 #else
 	struct dma_fence *fence;
@@ -346,8 +361,11 @@ int kbase_dma_fence_wait(struct kbase_jd_atom *katom,
 	}
 
 	for (i = 0; i < info->dma_fence_resv_count; i++) {
+#if (KERNEL_VERSION(5, 4, 0) > LINUX_VERSION_CODE)
 		struct reservation_object *obj = info->resv_objs[i];
-
+#else
+		struct dma_resv *obj = info->resv_objs[i];
+#endif
 		if (!test_bit(i, info->dma_fence_excl_bitmap)) {
 			err = reservation_object_reserve_shared(obj);
 			if (err) {

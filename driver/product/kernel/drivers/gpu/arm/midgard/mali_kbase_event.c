@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  *
  * (C) COPYRIGHT 2010-2016,2018-2020 ARM Limited. All rights reserved.
@@ -20,11 +21,10 @@
  *
  */
 
-
-
 #include <mali_kbase.h>
 #include <mali_kbase_debug.h>
 #include <tl/mali_kbase_tracepoints.h>
+#include <mali_linux_trace.h>
 
 static struct base_jd_udata kbase_event_process(struct kbase_context *kctx, struct kbase_jd_atom *katom)
 {
@@ -153,7 +153,8 @@ static int kbase_event_coalesce(struct kbase_context *kctx)
 	const int event_count = kctx->event_coalesce_count;
 
 	/* Join the list of pending events onto the tail of the main list
-	   and reset it */
+	 * and reset it
+	 */
 	list_splice_tail_init(&kctx->event_coalesce_list, &kctx->event_list);
 	kctx->event_coalesce_count = 0;
 
@@ -166,6 +167,16 @@ void kbase_event_post(struct kbase_context *ctx, struct kbase_jd_atom *atom)
 	struct kbase_device *kbdev = ctx->kbdev;
 
 	dev_dbg(kbdev->dev, "Posting event for atom %p\n", (void *)atom);
+
+	if (WARN_ON(atom->status != KBASE_JD_ATOM_STATE_COMPLETED)) {
+		dev_warn(kbdev->dev,
+				"%s: Atom %d (%p) not completed (status %d)\n",
+				__func__,
+				kbase_jd_atom_id(atom->kctx, atom),
+				atom->kctx,
+				atom->status);
+		return;
+	}
 
 	if (atom->core_req & BASE_JD_REQ_EVENT_ONLY_ON_FAILURE) {
 		if (atom->event_code == BASE_JD_EVENT_DONE) {
@@ -200,6 +211,10 @@ void kbase_event_post(struct kbase_context *ctx, struct kbase_jd_atom *atom)
 		dev_dbg(kbdev->dev, "Reporting %d events\n", event_count);
 
 		kbase_event_wakeup(ctx);
+
+		/* Post-completion latency */
+		trace_sysgraph(SGR_POST, ctx->id,
+					kbase_jd_atom_id(ctx, atom));
 	}
 }
 KBASE_EXPORT_TEST_API(kbase_event_post);
@@ -222,7 +237,7 @@ int kbase_event_init(struct kbase_context *kctx)
 	kctx->event_coalesce_count = 0;
 	kctx->event_workq = alloc_workqueue("kbase_event", WQ_MEM_RECLAIM, 1);
 
-	if (NULL == kctx->event_workq)
+	if (kctx->event_workq == NULL)
 		return -EINVAL;
 
 	return 0;

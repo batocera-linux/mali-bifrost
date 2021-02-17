@@ -1,6 +1,6 @@
 /*
  *
- * (C) COPYRIGHT 2019 ARM Limited. All rights reserved.
+ * (C) COPYRIGHT ARM Limited. All rights reserved.
  *
  * This program is free software and is provided to you under the terms of the
  * GNU General Public License version 2 as published by the Free Software
@@ -18,10 +18,53 @@
  *
  * SPDX-License-Identifier: GPL-2.0
  *
+ *//* SPDX-License-Identifier: GPL-2.0 */
+/*
+ *
+ * (C) COPYRIGHT 2019-2020 ARM Limited. All rights reserved.
+ *
+ * This program is free software and is provided to you under the terms of the
+ * GNU General Public License version 2 as published by the Free Software
+ * Foundation, and any use by you of this program is subject to the terms
+ * of such GNU license.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, you can access it online at
+ * http://www.gnu.org/licenses/gpl-2.0.html.
+ *
  */
 
 #ifndef _KBASE_MMU_H_
 #define _KBASE_MMU_H_
+
+/**
+ * kbase_mmu_as_init() - Initialising GPU address space object.
+ *
+ * This is called from device probe to initialise an address space object
+ * of the device.
+ *
+ * @kbdev: The kbase device structure for the device (must be a valid pointer).
+ * @i:     Array index of address space object.
+ *
+ * Return: 0 on success and non-zero value on failure.
+ */
+int kbase_mmu_as_init(struct kbase_device *kbdev, int i);
+
+/**
+ * kbase_mmu_as_term() - Terminate address space object.
+ *
+ * This is called upon device termination to destroy
+ * the address space object of the device.
+ *
+ * @kbdev: The kbase device structure for the device (must be a valid pointer).
+ * @i:     Array index of address space object.
+ */
+void kbase_mmu_as_term(struct kbase_device *kbdev, int i);
 
 /**
  * kbase_mmu_init - Initialise an object representing GPU page tables
@@ -114,5 +157,36 @@ int kbase_mmu_update_pages(struct kbase_context *kctx, u64 vpfn,
  */
 int kbase_mmu_bus_fault_interrupt(struct kbase_device *kbdev, u32 status,
 		u32 as_nr);
+
+/**
+ * kbase_mmu_gpu_fault_interrupt() - Report a GPU fault.
+ * @kbdev:    Kbase device pointer
+ * @status:   GPU fault status
+ * @as_nr:    Faulty address space
+ * @address:  GPU fault address
+ * @as_valid: true if address space is valid
+ *
+ * This function builds GPU fault information to submit a work
+ * for reporting the details of the fault.
+ */
+void kbase_mmu_gpu_fault_interrupt(struct kbase_device *kbdev, u32 status,
+		u32 as_nr, u64 address, bool as_valid);
+
+#if MALI_USE_CSF
+/**
+ * kbase_mmu_deferred_flush_invalidate() - Perform deferred MMU flush
+ *                                         operations for a Kbase context.
+ * @kctx:    Pointer to the Kbase context for which MMU flush operations
+ *           are pending.
+ *
+ * This function performs the MMU flush operations that are pending for a Kbase
+ * context. The flush operations will be deferred if the context is inactive,
+ * i.e. kctx->refcount is zero which happens when all the queue groups of a
+ * context have gone off CSG slots.
+ * This needs to be called when first queue group of the context is put back
+ * on the CSG slot.
+ */
+void kbase_mmu_deferred_flush_invalidate(struct kbase_context *kctx);
+#endif
 
 #endif /* _KBASE_MMU_H_ */
